@@ -63,30 +63,38 @@ final class HostPollingLoopTests: XCTestCase {
     }
 
     func testCycleStartTimesStayAnchoredWhenPollingConsumesCadenceFraction() {
+        let initialTime: UInt64 = 10_000_000_000
+        let cadenceNanoseconds: UInt64 = 400_000_000
+        let pollDurationNanoseconds: UInt64 = 200_000_000
+        let scheduler = VirtualPollingScheduler(now: initialTime)
         let starts = MonotonicStartRecorder()
-        let twoStarts = expectation(description: "two anchored cycle starts")
-        twoStarts.expectedFulfillmentCount = 2
         let loop = HostPollingLoop(
             hosts: [hosts[0]],
             snapshotStore: SnapshotStore(),
             cadence: 0.40,
+            scheduler: scheduler,
             pollHost: { _ in
-                if starts.appendNow() <= 2 { twoStarts.fulfill() }
-                Thread.sleep(forTimeInterval: 0.20)
+                starts.append(scheduler.nowNanoseconds())
+                scheduler.advance(by: pollDurationNanoseconds)
                 return .reportAbsent(exitCode: 3)
             }
         )
 
         XCTAssertTrue(loop.start())
-        wait(for: [twoStarts], timeout: 2)
+        XCTAssertEqual(scheduler.scheduledDeadlines, [initialTime])
+        XCTAssertTrue(scheduler.runNext())
+        XCTAssertTrue(scheduler.runNext())
         loop.stop()
 
-        let values = starts.values
-        XCTAssertGreaterThanOrEqual(values.count, 2)
-        let interval = Double(values[1] - values[0]) / 1_000_000_000
-        XCTAssertGreaterThan(interval, 0.30, "cycle started too early: \(interval)s")
-        XCTAssertLessThan(interval, 0.52,
-                          "cycle start drifted by poll duration instead of staying on the 0.40s deadline: \(interval)s")
+        // Advancing the virtual clock inside polling models work without wall-clock
+        // jitter. Scheduling after that work would produce t0 + 0.60s here, so these
+        // exact grid assertions continue to catch the original cadence-drift bug.
+        XCTAssertEqual(starts.values,
+                       [initialTime, initialTime + cadenceNanoseconds])
+        XCTAssertEqual(scheduler.scheduledDeadlines,
+                       [initialTime,
+                        initialTime + cadenceNanoseconds,
+                        initialTime + 2 * cadenceNanoseconds])
     }
 
     func testZeroHostsRemainsIdle() {
@@ -117,13 +125,75 @@ private final class MonotonicStartRecorder: @unchecked Sendable {
         return storage
     }
 
-    @discardableResult
-    func appendNow() -> Int {
+    func append(_ value: UInt64) {
         lock.lock()
-        storage.append(DispatchTime.now().uptimeNanoseconds)
-        let count = storage.count
+        storage.append(value)
         lock.unlock()
-        return count
+    }
+}
+
+private final class VirtualPollingScheduler: HostPollingScheduling, @unchecked Sendable {
+    private struct ScheduledAction {
+        let deadline: UInt64
+        let order: UInt64
+        let action: @Sendable () -> Void
+    }
+
+    private let lock = NSLock()
+    private var currentTime: UInt64
+    private var nextOrder: UInt64 = 0
+    private var actions: [ScheduledAction] = []
+    private var deadlines: [UInt64] = []
+
+    init(now: UInt64) {
+        currentTime = now
+    }
+
+    var scheduledDeadlines: [UInt64] {
+        lock.lock()
+        defer { lock.unlock() }
+        return deadlines
+    }
+
+    func nowNanoseconds() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentTime
+    }
+
+    func schedule(at deadline: UInt64,
+                  action: @escaping @Sendable () -> Void) {
+        lock.lock()
+        actions.append(ScheduledAction(deadline: deadline,
+                                       order: nextOrder,
+                                       action: action))
+        deadlines.append(deadline)
+        nextOrder &+= 1
+        lock.unlock()
+    }
+
+    func advance(by nanoseconds: UInt64) {
+        lock.lock()
+        currentTime &+= nanoseconds
+        lock.unlock()
+    }
+
+    @discardableResult
+    func runNext() -> Bool {
+        lock.lock()
+        guard let index = actions.indices.min(by: {
+            let lhs = actions[$0]
+            let rhs = actions[$1]
+            return (lhs.deadline, lhs.order) < (rhs.deadline, rhs.order)
+        }) else {
+            lock.unlock()
+            return false
+        }
+        let scheduled = actions.remove(at: index)
+        currentTime = max(currentTime, scheduled.deadline)
+        lock.unlock()
+        scheduled.action()
+        return true
     }
 }
 

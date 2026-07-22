@@ -1,5 +1,25 @@
 import Foundation
 
+protocol HostPollingScheduling: Sendable {
+    func nowNanoseconds() -> UInt64
+    func schedule(at deadline: UInt64,
+                  action: @escaping @Sendable () -> Void)
+}
+
+private struct DispatchHostPollingScheduler: HostPollingScheduling {
+    let queue: DispatchQueue
+
+    func nowNanoseconds() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
+    }
+
+    func schedule(at deadline: UInt64,
+                  action: @escaping @Sendable () -> Void) {
+        queue.asyncAfter(deadline: DispatchTime(uptimeNanoseconds: deadline),
+                         execute: action)
+    }
+}
+
 /// Owns the application process' polling cadence. One cycle visits every
 /// configured host sequentially with an ephemeral SSH connection. The cadence
 /// and sequencing remain provisional (Q4.2).
@@ -11,25 +31,43 @@ public final class HostPollingLoop: @unchecked Sendable {
     private let cadence: TimeInterval
     private let pollHost: @Sendable (ObservedHost) -> PollOutcome
     private let now: @Sendable () -> Date
-    private let queue: DispatchQueue
+    private let scheduler: any HostPollingScheduling
     private let lock = NSLock()
     private var running = false
     private var generation: UInt64 = 0
 
-    public init(hosts: [ObservedHost],
-                snapshotStore: SnapshotStore,
-                cadence: TimeInterval = defaultCadence,
-                queue: DispatchQueue = DispatchQueue(label: "monobs.host-polling"),
-                now: @escaping @Sendable () -> Date = { Date() },
-                pollHost: @escaping @Sendable (ObservedHost) -> PollOutcome = {
-                    SSHPollRunner.poll(host: $0)
-                }) {
+    public convenience init(
+        hosts: [ObservedHost],
+        snapshotStore: SnapshotStore,
+        cadence: TimeInterval = defaultCadence,
+        queue: DispatchQueue = DispatchQueue(label: "monobs.host-polling"),
+        now: @escaping @Sendable () -> Date = { Date() },
+        pollHost: @escaping @Sendable (ObservedHost) -> PollOutcome = {
+            SSHPollRunner.poll(host: $0)
+        }
+    ) {
+        self.init(hosts: hosts,
+                  snapshotStore: snapshotStore,
+                  cadence: cadence,
+                  now: now,
+                  scheduler: DispatchHostPollingScheduler(queue: queue),
+                  pollHost: pollHost)
+    }
+
+    init(hosts: [ObservedHost],
+         snapshotStore: SnapshotStore,
+         cadence: TimeInterval = defaultCadence,
+         now: @escaping @Sendable () -> Date = { Date() },
+         scheduler: any HostPollingScheduling,
+         pollHost: @escaping @Sendable (ObservedHost) -> PollOutcome = {
+             SSHPollRunner.poll(host: $0)
+         }) {
         precondition(cadence > 0, "poll cadence must be positive")
         self.hosts = hosts
         self.snapshotStore = snapshotStore
         self.cadence = cadence
-        self.queue = queue
         self.now = now
+        self.scheduler = scheduler
         self.pollHost = pollHost
     }
 
@@ -46,7 +84,7 @@ public final class HostPollingLoop: @unchecked Sendable {
         generation &+= 1
         let activeGeneration = generation
         lock.unlock()
-        scheduleCycle(at: .now(), generation: activeGeneration)
+        scheduleCycle(at: scheduler.nowNanoseconds(), generation: activeGeneration)
         return true
     }
 
@@ -69,19 +107,18 @@ public final class HostPollingLoop: @unchecked Sendable {
     /// cadence deadlines. The next tick is enqueued before work begins; when a
     /// cycle overruns one or more deadlines, missed ticks coalesce into one
     /// immediate cycle and the following deadline remains on the original grid.
-    private func scheduleCycle(at deadline: DispatchTime, generation: UInt64) {
-        queue.asyncAfter(deadline: deadline) { [weak self] in
+    private func scheduleCycle(at deadline: UInt64, generation: UInt64) {
+        scheduler.schedule(at: deadline) { [weak self] in
             guard let self, self.isRunning(generation: generation) else { return }
-            let now = DispatchTime.now().uptimeNanoseconds
+            let now = self.scheduler.nowNanoseconds()
             let cadenceNanoseconds = max(1, UInt64(self.cadence * 1_000_000_000))
-            let elapsed = now > deadline.uptimeNanoseconds
-                ? now - deadline.uptimeNanoseconds
+            let elapsed = now > deadline
+                ? now - deadline
                 : 0
             let intervalsToNext = elapsed / cadenceNanoseconds + 1
-            let nextUptime = deadline.uptimeNanoseconds
+            let nextUptime = deadline
                 &+ intervalsToNext &* cadenceNanoseconds
-            self.scheduleCycle(at: DispatchTime(uptimeNanoseconds: nextUptime),
-                               generation: generation)
+            self.scheduleCycle(at: nextUptime, generation: generation)
             self.runOneCycle()
         }
     }
