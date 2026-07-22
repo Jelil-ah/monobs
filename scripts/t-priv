@@ -57,7 +57,9 @@ find . \
     my $dl = $ENV{T_PRIV_DENYLIST_FILE};
     if (defined $dl && -r $dl) {
         open my $dfh, "<", $dl or die "t-priv: cannot read denylist $dl\n";
-        while (<$dfh>) { chomp; next if /^\s*(#|$)/; push @deny, $_; }
+        # chomp drops a trailing \n but not the \r of a CRLF-edited denylist;
+        # a stray \r would make every entry match nothing (R2-2). Strip it.
+        while (<$dfh>) { chomp; s/\r$//; next if /^\s*(#|$)/; push @deny, $_; }
         close $dfh;
     }
 
@@ -97,12 +99,39 @@ find . \
             next;
         }
         open my $fh, "<:raw", $path or do { warn "t-priv: cannot read $path\n"; $violations++; next; };
-        my $ln = 0;
-        while (my $line = <$fh>) {
-            $ln++;
-            check("$path:$ln", $line, 0);
-        }
+        my $content = do { local $/; <$fh> };
         close $fh;
+        $content = "" unless defined $content;
+
+        # Non-UTF-8 / binary-like guard (fail-open hardening, R2-1). The rules
+        # scan raw bytes, so an identifier stored in a non-text encoding slips
+        # through silently: a real IP in UTF-16 has NUL bytes between its ASCII
+        # code units, so the IPv4 regex never matches and the file PASSES. Do
+        # not pass such a file silently — decode it when a UTF-16 BOM tells us
+        # how, otherwise emit a VISIBLE warning. Legitimate binaries (none
+        # expected in-repo) only warn; they never become false-positive
+        # violations.
+        my $bom = substr($content, 0, 2);
+        if ($bom eq "\xFF\xFE" || $bom eq "\xFE\xFF") {
+            # UTF-16 text: drop the BOM and the NUL bytes padding each ASCII
+            # code unit, then scan the recovered text so a hidden identifier
+            # still fails (fail-closed).
+            warn "t-priv: warning: $path: UTF-16 file decoded and text-scanned\n";
+            my $decoded = substr($content, 2);
+            $decoded =~ s/\x00//g;
+            my $ln = 0;
+            for my $line (split /\n/, $decoded, -1) { $ln++; check("$path:$ln", $line, 0); }
+            next;
+        }
+        if (index(substr($content, 0, 4096), "\x00") >= 0) {
+            # Binary-like with no decodable BOM: a reliable text scan is not
+            # possible. Warn visibly instead of passing silently, but do not
+            # fail — avoid false positives on legitimate binary assets.
+            warn "t-priv: warning: $path: binary-like/non-UTF-8 file not text-scanned\n";
+            next;
+        }
+        my $ln = 0;
+        for my $line (split /\n/, $content, -1) { $ln++; check("$path:$ln", $line, 0); }
     }
 
     # Fail closed: an empty file list means find/the pipeline broke, not a

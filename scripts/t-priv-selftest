@@ -124,4 +124,41 @@ printf 'db: %s %s\n' "$denied_host" "$allow_marker" > "$SEED_DIR/denied.txt"
 expect_fail "denylist overrides allow marker" denylist "denied.txt" "$DENY_TMP"
 rm -f "$SEED_DIR/denied.txt"
 
+# 9. R2-2: a denylist edited with CRLF line endings must still fire. Before the
+# \r strip, each entry kept a trailing \r that matched nothing, so the repo
+# passed silently even with the denylisted string present.
+DENY_CRLF="$(mktemp)" || fail "cannot create temp CRLF denylist"
+printf '%s\r\n' "$denied_host" > "$DENY_CRLF"
+printf 'db: %s\n' "$denied_host" > "$SEED_DIR/denied-crlf.txt"
+expect_fail "CRLF denylist still fires" denylist "denied-crlf.txt" "$DENY_CRLF"
+rm -f "$SEED_DIR/denied-crlf.txt" "$DENY_CRLF"
+
+# 10. R2-1: a real IP stored as UTF-16 (BOM + NUL-padded code units) must be
+# decoded and reported, not silently passed. Bytes are assembled here so the
+# selftest source never holds a contiguous violation.
+perl -e 'binmode STDOUT; print "\xFF\xFE"; for my $c (split //, "server: ".$ARGV[0]."\n") { print $c, "\x00"; }' \
+    "$public_ip" > "$SEED_DIR/utf16-ip.txt"
+expect_fail "UTF-16 IP is decoded and caught" ipv4 "utf16-ip.txt" /dev/null
+rm -f "$SEED_DIR/utf16-ip.txt"
+
+# 11. R2-1: a non-UTF-8 file with no decodable BOM cannot be text-scanned, but
+# it must never pass silently — a visible warning is required (exit stays 0 so
+# legitimate binaries are not false positives).
+perl -e 'binmode STDOUT; for my $c (split //, $ARGV[0]) { print $c, "\x00"; }' \
+    "$public_ip" > "$SEED_DIR/utf16-nobom.bin"
+run_lint /dev/null
+[ "$status" -eq 0 ] || { printf '%s\n' "$out" >&2; fail "non-UTF-8 no-BOM: expected exit 0 (warn only), got $status"; }
+printf '%s\n' "$out" | grep -qF "binary-like" \
+    || { printf '%s\n' "$out" >&2; fail "non-UTF-8 no-BOM: no visible warning emitted"; }
+printf '%s\n' "$out" | grep -qF "utf16-nobom.bin" \
+    || { printf '%s\n' "$out" >&2; fail "non-UTF-8 no-BOM: warning missing the file path"; }
+echo "ok $n - non-UTF-8 file (no BOM) warns, never passes silently"; n=$((n + 1))
+rm -f "$SEED_DIR/utf16-nobom.bin"
+
+# 12. R2-1: normal multi-byte UTF-8 text (no NUL) must still be scanned as text
+# — the decode path must not misclassify it as binary.
+printf 'caf\xc3\xa9 server: %s\n' "$public_ip" > "$SEED_DIR/utf8-text.txt"
+expect_fail "UTF-8 multibyte text still scanned" ipv4 "utf8-text.txt" /dev/null
+rm -f "$SEED_DIR/utf8-text.txt"
+
 echo "t-priv-selftest: PASS"
