@@ -24,6 +24,13 @@ private final class MonobsRuntime {
     private let hosts: [ObservedHost]
     private let snapshotStore: SnapshotStore
     private let pollingLoop: HostPollingLoop
+    // Story 2.1: the global Tailscale-local availability fact (AD-14), produced
+    // beside the per-host snapshots. The detector re-probes each read; the store
+    // holds the latest value, refreshed once per poll cycle. NOTHING consumes it
+    // yet — the reducer is deliberately NOT wired to it (that is Story 2.2's
+    // FR10.1 override). Kept here only so 2.2 can read `tailscaleFact.current`.
+    private let tailscaleDetector = TailscaleDetector()
+    let tailscaleFact = TailscaleFactStore()
 
     init() {
         let config = HostConfigLoader.load()
@@ -32,6 +39,8 @@ private final class MonobsRuntime {
         snapshotStore = store
         let model = self.model
         let hosts = self.hosts
+        let tailscaleDetector = self.tailscaleDetector
+        let tailscaleFact = self.tailscaleFact
         pollingLoop = HostPollingLoop(
             hosts: config.hosts,
             snapshotStore: store,
@@ -42,6 +51,11 @@ private final class MonobsRuntime {
             // CA-1) — no second cadence parameter. The pure projector derives
             // everything; this closure only feeds it the current snapshots.
             onCycleComplete: {
+                // Story 2.1: refresh the global Tailscale fact at the loop's own
+                // cadence (no second cadence). Read-only; the reducer is NOT
+                // involved — 2.2 wires consumption. The projection below is
+                // unchanged (2.1 renders nothing new).
+                tailscaleFact.update(tailscaleDetector.tailscaleLocalUp)
                 let projection = MenuBarProjector.project(hosts: hosts,
                                                           snapshots: store.allSnapshots(),
                                                           now: Date())
@@ -54,6 +68,9 @@ private final class MonobsRuntime {
         model.projection = MenuBarProjector.project(hosts: hosts,
                                                     snapshots: store.allSnapshots(),
                                                     now: Date())
+        // Initial Tailscale fact before the first cycle (fail-closed default is
+        // `false`; this only makes the fact fresh at startup). Still unconsumed.
+        tailscaleFact.update(tailscaleDetector.tailscaleLocalUp)
         pollingLoop.start()
     }
 
