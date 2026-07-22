@@ -31,6 +31,13 @@ private final class MonobsRuntime {
     // FR10.1 override). Kept here only so 2.2 can read `tailscaleFact.current`.
     private let tailscaleDetector = TailscaleDetector()
     let tailscaleFact = TailscaleFactStore()
+    // Story 2.4: the rising-edge notification coordinator (AD-13). It owns the
+    // per-host "previous state" memory and drives the injected emitter. The real
+    // `UserNotifications` effect is injected here; the coordinator itself is pure
+    // logic (MonobsKit). Touched only by the poll-loop thread under this wiring,
+    // but the coordinator locks its own state (F-1) so a future manual refresh
+    // (AD-16) can call `processCycle` safely.
+    private let coordinator = NotificationCoordinator(emitter: UserNotificationEmitter.emit)
 
     init() {
         let config = HostConfigLoader.load()
@@ -41,6 +48,11 @@ private final class MonobsRuntime {
         let hosts = self.hosts
         let tailscaleDetector = self.tailscaleDetector
         let tailscaleFact = self.tailscaleFact
+        let coordinator = self.coordinator
+        // Story 2.4: request notification authorization once at startup
+        // (provisional posture §Blocker.1). Fire-and-forget — the rising-edge
+        // decision + write-back run regardless of the permission outcome.
+        UserNotificationEmitter.requestAuthorization()
         pollingLoop = HostPollingLoop(
             hosts: config.hosts,
             snapshotStore: store,
@@ -61,6 +73,15 @@ private final class MonobsRuntime {
                                                           snapshots: store.allSnapshots(),
                                                           now: Date(),
                                                           tailscaleLocalUp: tailscaleFact.current)
+                // Story 2.4 (AD-13): AFTER the projection, feed the already-derived
+                // per-host states (AD-11, no re-derivation) to the rising-edge
+                // coordinator. This runs ONLY on real poll cycles (`onCycleComplete`),
+                // NEVER on the pre-poll initial projection below — so the FIRST poll
+                // cycle IS the silent baseline (cold start muet even if a host is
+                // already red: previous map empty ⇒ nil ⇒ muet).
+                let currentStates = Dictionary(uniqueKeysWithValues:
+                    projection.hosts.map { ($0.hostID, $0.state) })
+                coordinator.processCycle(currentStates: currentStates)
                 DispatchQueue.main.async { model.projection = projection }
             }
         )
