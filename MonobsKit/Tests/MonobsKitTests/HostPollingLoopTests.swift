@@ -11,6 +11,34 @@ final class HostPollingLoopTests: XCTestCase {
         XCTAssertEqual(HostPollingLoop.defaultCadence, 60)
     }
 
+    // Story 1.4: the end-of-cycle hook fires exactly once per cycle, AFTER the
+    // snapshot has been written — so the surface projection recomputes against
+    // fresh data. Non-vacuous: the recorded snapshot is asserted inside the hook.
+    func testCycleCompletionHookFiresAfterSnapshotWrite() {
+        let store = SnapshotStore()
+        let receivedAt = Date(timeIntervalSince1970: 1_750_000_000)
+        let facts = ReportFacts(metrics: ["sample": .number(1)],
+                                serverTimestamp: "2026-01-01T12:00:00Z")
+        let counter = HostCallRecorder()
+        var seenFreshness: Date??
+        let loop = HostPollingLoop(
+            hosts: [hosts[0]],
+            snapshotStore: store,
+            cadence: 0.01,
+            now: { receivedAt },
+            pollHost: { _ in .validReport(facts) },
+            onCycleComplete: {
+                counter.append("done")
+                seenFreshness = store.snapshot(for: "vps-web.example").lastValidReceivedAt
+            }
+        )
+
+        loop.runOneCycle()
+
+        XCTAssertEqual(counter.values, ["done"])
+        XCTAssertEqual(seenFreshness, receivedAt)
+    }
+
     func testOneCyclePollsEveryHostAndRecordsAtClientClock() {
         let store = SnapshotStore()
         let receivedAt = Date(timeIntervalSince1970: 1_750_000_000)

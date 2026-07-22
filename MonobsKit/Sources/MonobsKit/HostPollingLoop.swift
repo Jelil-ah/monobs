@@ -31,6 +31,10 @@ public final class HostPollingLoop: @unchecked Sendable {
     private let cadence: TimeInterval
     private let pollHost: @Sendable (ObservedHost) -> PollOutcome
     private let now: @Sendable () -> Date
+    /// Story 1.4: fired at the end of every cycle so the surface projection can
+    /// recompute at the loop's own cadence — no second cadence parameter is
+    /// introduced (the 60 s cadence stays the single isolated cadence of 1.3).
+    private let onCycleComplete: (@Sendable () -> Void)?
     private let scheduler: any HostPollingScheduling
     private let lock = NSLock()
     private var running = false
@@ -44,14 +48,16 @@ public final class HostPollingLoop: @unchecked Sendable {
         now: @escaping @Sendable () -> Date = { Date() },
         pollHost: @escaping @Sendable (ObservedHost) -> PollOutcome = {
             SSHPollRunner.poll(host: $0)
-        }
+        },
+        onCycleComplete: (@Sendable () -> Void)? = nil
     ) {
         self.init(hosts: hosts,
                   snapshotStore: snapshotStore,
                   cadence: cadence,
                   now: now,
                   scheduler: DispatchHostPollingScheduler(queue: queue),
-                  pollHost: pollHost)
+                  pollHost: pollHost,
+                  onCycleComplete: onCycleComplete)
     }
 
     init(hosts: [ObservedHost],
@@ -61,7 +67,8 @@ public final class HostPollingLoop: @unchecked Sendable {
          scheduler: any HostPollingScheduling,
          pollHost: @escaping @Sendable (ObservedHost) -> PollOutcome = {
              SSHPollRunner.poll(host: $0)
-         }) {
+         },
+         onCycleComplete: (@Sendable () -> Void)? = nil) {
         precondition(cadence > 0, "poll cadence must be positive")
         self.hosts = hosts
         self.snapshotStore = snapshotStore
@@ -69,6 +76,7 @@ public final class HostPollingLoop: @unchecked Sendable {
         self.now = now
         self.scheduler = scheduler
         self.pollHost = pollHost
+        self.onCycleComplete = onCycleComplete
     }
 
     /// Starts with an immediate cycle. Zero configured hosts remain cleanly
@@ -101,6 +109,10 @@ public final class HostPollingLoop: @unchecked Sendable {
             let outcome = pollHost(host)
             snapshotStore.record(outcome, forHost: host.host, receivedAt: now())
         }
+        // End-of-cycle hook: the surface projection recomputes here, at the
+        // loop's cadence (Story 1.4). The reducer/projection stay the single
+        // source of derived state — this only signals "a cycle finished".
+        onCycleComplete?()
     }
 
     /// Provisional Q4.2 overrun policy: cycle starts are anchored to monotonic
