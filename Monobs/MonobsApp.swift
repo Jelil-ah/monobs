@@ -52,25 +52,33 @@ private final class MonobsRuntime {
             // everything; this closure only feeds it the current snapshots.
             onCycleComplete: {
                 // Story 2.1: refresh the global Tailscale fact at the loop's own
-                // cadence (no second cadence). Read-only; the reducer is NOT
-                // involved — 2.2 wires consumption. The projection below is
-                // unchanged (2.1 renders nothing new).
+                // cadence (no second cadence). Read-only. Story 2.2 now CONSUMES
+                // it: the freshly-updated `tailscaleFact.current` is passed to
+                // the projector, which forwards it to the reducer for the FR10.1
+                // override.
                 tailscaleFact.update(tailscaleDetector.tailscaleLocalUp)
                 let projection = MenuBarProjector.project(hosts: hosts,
                                                           snapshots: store.allSnapshots(),
-                                                          now: Date())
+                                                          now: Date(),
+                                                          tailscaleLocalUp: tailscaleFact.current)
                 DispatchQueue.main.async { model.projection = projection }
             }
         )
         config.diagnostics.forEach(Self.log)
+        // Prime the global Tailscale fact BEFORE the initial projection so the
+        // cold-start view is honest: the fact starts `false` (fail-closed), and
+        // even after this first probe a `false` result forces every host grey —
+        // never a premature vert/red. Ordered before `project(...)` so the
+        // initial projection consumes a fresh fact rather than the constructor
+        // default.
+        tailscaleFact.update(tailscaleDetector.tailscaleLocalUp)
         // Initial projection before the first cycle: honest degenerate/stale
-        // view (no data yet), never a premature vert.
+        // view (no data yet), never a premature vert. Passes the primed
+        // `tailscaleFact.current` — fail-closed at startup.
         model.projection = MenuBarProjector.project(hosts: hosts,
                                                     snapshots: store.allSnapshots(),
-                                                    now: Date())
-        // Initial Tailscale fact before the first cycle (fail-closed default is
-        // `false`; this only makes the fact fresh at startup). Still unconsumed.
-        tailscaleFact.update(tailscaleDetector.tailscaleLocalUp)
+                                                    now: Date(),
+                                                    tailscaleLocalUp: tailscaleFact.current)
         pollingLoop.start()
     }
 

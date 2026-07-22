@@ -46,12 +46,18 @@ public enum MenuBarProjector {
     public static func project(hosts: [ObservedHost],
                                snapshots: [String: HostSnapshot],
                                now: Date,
+                               tailscaleLocalUp: Bool,
                                stalenessThreshold: TimeInterval = StateReducer.defaultStalenessThreshold) -> MenuBarProjection {
         let rows = hosts.map { host -> HostProjection in
             let snapshot = snapshots[host.host] ?? HostSnapshot()
             // The single reducer derives the state (AD-11); the projection never
-            // compares an age to a threshold or reconstructs a state.
-            let state = StateReducer.reduce(snapshot, now: now, stalenessThreshold: stalenessThreshold)
+            // compares an age to a threshold or reconstructs a state. The global
+            // `tailscaleLocalUp` fact is FORWARDED to the reducer unchanged — the
+            // projection does not interpret it (the FR10.1 override lives in the
+            // reducer, not here, or the projection would be deriving state).
+            let state = StateReducer.reduce(snapshot, now: now,
+                                            tailscaleLocalUp: tailscaleLocalUp,
+                                            stalenessThreshold: stalenessThreshold)
             // Age is a pure projection of the freshness timestamp, not a
             // freshness decision (AD-12): nil stays nil (never rendered 0 s).
             // Clock-skew guard (fail-closed, consistent with the reducer): if
