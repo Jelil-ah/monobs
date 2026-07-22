@@ -1,0 +1,3 @@
+WARNING: something unrelated on stdout
+{"v":1,"ts":"2026-01-01T12:00:00Z","metrics":{"loadavg_1m":0.42}}
+trailing noise

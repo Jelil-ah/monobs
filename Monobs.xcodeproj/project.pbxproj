@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		53E4258330110B57009BA42A /* MonobsKit in Frameworks */ = {isa = PBXBuildFile; productRef = 53E4258530110B57009BA42A /* MonobsKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		53E4257530110B53009BA42A /* Monobs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Monobs.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				53E4258330110B57009BA42A /* MonobsKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = Monobs;
 			packageProductDependencies = (
+				53E4258530110B57009BA42A /* MonobsKit */,
 			);
 			productName = Monobs;
 			productReference = 53E4257530110B53009BA42A /* Monobs.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = 53E4256C30110B53009BA42A;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				53E4258430110B57009BA42A /* XCLocalSwiftPackageReference "MonobsKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 53E4257630110B53009BA42A /* Products */;
 			projectDirPath = "";
@@ -251,7 +260,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_APP_SANDBOX = YES;
+				/* B5 ratified (DECISIONS.md "Story 1.3 sandbox decision"): sandbox off is
+				   the v1 posture — the poller execs the system ssh binary and reads the
+				   out-of-repo host config, both impossible under App Sandbox. Read-only is
+				   guaranteed by T-RO + the server-side forced command (AD-9), not by the
+				   sandbox. Revisable. */
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -282,7 +296,9 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_APP_SANDBOX = YES;
+				/* B5 ratified (DECISIONS.md "Story 1.3 sandbox decision"): sandbox off is
+				   the v1 posture — same rationale as the Debug configuration above. */
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -327,6 +343,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		53E4258430110B57009BA42A /* XCLocalSwiftPackageReference "MonobsKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = MonobsKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		53E4258530110B57009BA42A /* MonobsKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MonobsKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 53E4256D30110B53009BA42A /* Project object */;
 }

@@ -1,0 +1,18 @@
+name: monobskit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core-tests:
+    # macOS is required by the live local-sshd integration seam.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: MonobsKit tests
+        run: swift test --package-path MonobsKit

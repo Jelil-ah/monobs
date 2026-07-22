@@ -5,9 +5,11 @@ Monobs reads the list of hosts to observe from a configuration file that lives
 contains real host data — only this format description with fictional examples
 (RFC 2606 hostnames, RFC 5737 documentation IPs).
 
-> Status: the scaffold (story 1.1) does not read this file yet. Nothing in the
-> current code consumes it; this document only fixes the expected format and
-> location for upcoming stories.
+> Status: consumed since story 1.3 — the app's poller reads this file at
+> launch and polls every listed host over SSH. The parser accepts exactly the
+> subset documented here (`[[hosts]]` entries, quoted-string and integer
+> values, `#` comments), nothing more. An absent or invalid file means zero
+> hosts and a local diagnostic, never a crash.
 
 ## Location
 
@@ -35,6 +37,7 @@ port = 22                        # optional, default 22
 name = "database"
 host = "vps-db.example"
 user = "deploy"
+identity = "~/.ssh/monobs_report_ed25519"   # optional, see below
 
 [[hosts]]
 name = "lab"
@@ -43,7 +46,14 @@ user = "ops"
 ```
 
 - `host` may be a Tailscale MagicDNS name or a tailnet IP; in real use these
-  are exactly the identifiers that must never appear in this repo.
+  are exactly the identifiers that must never appear in this repo. It also
+  serves as the stable per-host identifier inside the app (must be unique;
+  duplicate entries are ignored with a diagnostic).
+- `identity` (optional, **provisional**): path to the dedicated read-only key
+  (see docs/deploy-forced-command.md). `IdentitiesOnly=yes` is always applied;
+  when this field is set, ssh also receives `-i`. When absent, ssh resolves its
+  configured/default identity files without offering unrelated agent keys.
+- `name` is optional and defaults to `host`.
 - Authentication is key-based SSH only; no secrets ever go in this file's
   documented examples, and no passwords are supported.
 

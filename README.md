@@ -2,7 +2,9 @@
 
 A read-only macOS menu bar surface showing the state of VPS hosts, reached over SSH through a Tailscale tailnet.
 
-Current status: **early scaffold** — the app shows a static menu bar placeholder. No network code, no widget, no popover yet.
+Current status: **read-only polling core** — the visible menu bar surface remains
+a static placeholder while the app polls configured hosts and keeps per-host
+facts in memory. No server action, notification, widget, or popover exists.
 
 ## Requirements
 
@@ -19,6 +21,30 @@ open build/Build/Products/Debug/Monobs.app
 ```
 
 The app is a menu bar agent (no Dock icon): look for the dashed-circle icon in the menu bar.
+
+## Read-only SSH client
+
+At launch, the app reads the out-of-repo host configuration and runs one global
+poll cycle every 60 seconds. Each host is queried by a non-interactive exec of
+the system `ssh` binary with no remote command argument. Cycle starts stay on a
+monotonic 60-second grid; overruns coalesce instead of shifting the next start by
+the work duration (provisional Q4.2 policy). The in-process snapshot contains
+only the last valid report facts, their client reception time, and the latest
+SSH transport-failure boolean.
+
+Read-only is enforced at both ends: the client has no SCP/SFTP/rsync or remote
+command path. It ignores OpenSSH config (`-F /dev/null`) and explicitly disables
+remote/local commands, proxies, jumps, and forwarding. Captured output is bounded
+(1 MiB stdout, 64 KiB stderr); excess is drained and discarded, and an oversized
+successful report is invalid rather than fresh. The server key is restricted to
+`monobs-report` by the forced command documented in
+[docs/deploy-forced-command.md](docs/deploy-forced-command.md).
+
+Core and live local-sshd integration tests:
+
+```sh
+swift test --package-path MonobsKit
+```
 
 ## Server report (`monobs-report`)
 
