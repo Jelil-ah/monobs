@@ -1,0 +1,25 @@
+# Xcode / build artifacts
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+.swiftpm/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS filesystem noise
+.DS_Store
+._*
+
+# Defense in depth (AD-15): real-host config must live OUTSIDE the repo tree
+# (see docs/host-config.md). If one ever lands here by mistake, never commit it.
+hosts.toml
+*.hosts.toml
+.monobs/
+t-priv-denylist*
+.t-priv-selftest.tmp/

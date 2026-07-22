@@ -1,0 +1,121 @@
+#!/bin/bash
+# T-PRIV — privacy lint (NFR3, AD-15).
+# Fails (exit 1) if the repo tree contains anything that looks like a real
+# infrastructure identifier: IPs outside documentation ranges, tailnet
+# hostnames, key/token material, or absolute home paths. File contents,
+# file names, and symlinks (name + target text, never followed) are scanned.
+# Documentation-reserved values (RFC 5737/3849 IPs, RFC 2606 hostnames,
+# localhost) are explicitly tolerated. Only the repo-root build/ and
+# DerivedData/ directories (xcodebuild output) are exempt.
+#
+# Escape hatch for lines that must mention a pattern (never a real value):
+# put "t-priv:allow" on the line.
+#
+# Optional out-of-repo denylist (one entry per line, case-insensitive
+# substring match) of strings that must never appear in the repo — e.g. your
+# real hostnames. It lives OUTSIDE the repo tree by design (a committed
+# denylist would itself be a leak):
+#   $T_PRIV_DENYLIST, default ~/.config/monobs/t-priv-denylist
+# Example content (fictional): vps-web.example
+# The denylist outranks the t-priv:allow marker.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DENYLIST="${T_PRIV_DENYLIST:-$HOME/.config/monobs/t-priv-denylist}"
+cd "$REPO_ROOT" || exit 2
+
+find . \
+    -name .git -prune -o \
+    -path ./build -type d -prune -o \
+    -path ./DerivedData -type d -prune -o \
+    \( -type f -o -type l \) -print \
+| LC_ALL=C sort \
+| T_PRIV_DENYLIST_FILE="$DENYLIST" perl -w -e '
+    use strict;
+    my @rules = (
+        # name, qr//, allowlist qr// applied to the matched text (undef = none)
+        ["ipv4",
+         qr/(?<![0-9.])(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?!\.?[0-9])/,
+         qr/^(?:192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|127\.|0\.0\.0\.0$|255\.255\.255\.)/],
+        ["ipv6",
+         qr/(?<![0-9A-Fa-f:.])(?:[0-9A-Fa-f]{1,4}:){3,7}[0-9A-Fa-f]{1,4}(?![0-9A-Fa-f:.])|(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:)+:(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?![0-9A-Fa-f:])/,
+         qr/^(?:2001:[Dd][Bb]8:|::1$)/],
+        ["tailnet-domain",  qr/\.ts\.net\b|\btail[0-9a-f]{4,}\b/, undef],
+        ["private-key",     qr/-----BEGIN[^-]{0,40}PRIVATE KEY/, undef],
+        ["ssh-pubkey",      qr/\bssh-(?:rsa|dss|ed25519|ecdsa[^\s]*)\s+AAAA[A-Za-z0-9+\/=]{16,}/, undef],
+        ["tailscale-key",   qr/\btskey-[A-Za-z0-9-]{6,}/, undef],
+        ["github-token",    qr/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/, undef],
+        ["aws-key",         qr/\bAKIA[0-9A-Z]{16}\b/, undef],
+        ["slack-token",     qr/\bxox[abprs]-[A-Za-z0-9-]{10,}/, undef],
+        ["api-key",         qr/\bsk-[A-Za-z0-9_-]{20,}/, undef],
+        ["jwt",             qr/\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}/, undef],
+        ["home-path",       qr/(?<![\w@.\-~])\/(?:home|Users)\/[A-Za-z][A-Za-z0-9_.\-]{2,}/, undef],
+    );
+
+    # Out-of-repo denylist of literal strings (never committed).
+    my @deny;
+    my $dl = $ENV{T_PRIV_DENYLIST_FILE};
+    if (defined $dl && -r $dl) {
+        open my $dfh, "<", $dl or die "t-priv: cannot read denylist $dl\n";
+        while (<$dfh>) { chomp; next if /^\s*(#|$)/; push @deny, $_; }
+        close $dfh;
+    }
+
+    my $violations = 0;
+    sub check {
+        my ($where, $text, $skip_allow_marker) = @_;
+        # Denylist first: a denylisted string is a real identifier by
+        # definition — the allow marker must not be able to whitelist it.
+        for my $d (@deny) {
+            if (index(lc $text, lc $d) >= 0) {
+                print "$where: [denylist] matched a denylisted string\n";
+                $violations++;
+            }
+        }
+        return if !$skip_allow_marker && $text =~ /t-priv:al\Qlow\E/;
+        for my $r (@rules) {
+            my ($name, $re, $allow) = @$r;
+            while ($text =~ /$re/g) {
+                my $m = $&;
+                next if defined $allow && $m =~ $allow;
+                print "$where: [$name] $m\n";
+                $violations++;
+            }
+        }
+    }
+
+    my $scanned = 0;
+    while (my $path = <STDIN>) {
+        chomp $path;
+        $scanned++;
+        check("$path (file name)", $path, 1);
+        if (-l $path) {
+            # Git stores the target text as the blob: scan it, never follow.
+            my $target = readlink $path;
+            if (defined $target) { check("$path (symlink target)", $target, 1); }
+            else { warn "t-priv: cannot readlink $path\n"; $violations++; }
+            next;
+        }
+        open my $fh, "<:raw", $path or do { warn "t-priv: cannot read $path\n"; $violations++; next; };
+        my $ln = 0;
+        while (my $line = <$fh>) {
+            $ln++;
+            check("$path:$ln", $line, 0);
+        }
+        close $fh;
+    }
+
+    # Fail closed: an empty file list means find/the pipeline broke, not a
+    # clean repo.
+    if (!$scanned) {
+        print STDERR "t-priv: FAIL — no files scanned (find failed?)\n";
+        exit 2;
+    }
+
+    if ($violations) {
+        print STDERR "t-priv: FAIL — $violations violation(s)\n";
+        exit 1;
+    }
+    print "t-priv: PASS — no real infrastructure identifiers found\n";
+    exit 0;
+'

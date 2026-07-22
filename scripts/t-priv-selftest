@@ -1,0 +1,127 @@
+#!/bin/bash
+# T-PRIV self-test: the delivered repo must pass the lint, seeded violations
+# must fail with the expected rule on the expected path, and the out-of-repo
+# denylist must fire even through the t-priv:allow marker. Exit 0 only if
+# every case holds.
+#
+# Seeded values are assembled by concatenation so this file itself never
+# contains a contiguous violation.
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+LINT="$REPO_ROOT/scripts/t-priv"
+fail() { echo "t-priv-selftest: FAIL — $1" >&2; exit 1; }
+
+[ -x "$LINT" ] || fail "lint not found or not executable: $LINT"
+
+# Seed dir + cleanup are installed before any case runs, so a previously
+# killed run can never poison this one, and every exit path cleans up.
+SEED_DIR="$REPO_ROOT/.t-priv-selftest.tmp"
+DENY_TMP=""
+cleanup() { rm -rf "$SEED_DIR"; [ -n "$DENY_TMP" ] && rm -f "$DENY_TMP"; }
+trap cleanup EXIT
+rm -rf "$SEED_DIR" && mkdir -p "$SEED_DIR" || fail "cannot create seed dir"
+
+n=1
+out=""
+status=0
+run_lint() {  # $1 = denylist path for this run
+    status=0
+    out="$(T_PRIV_DENYLIST="$1" "$LINT" 2>&1)" || status=$?
+}
+expect_pass() {  # $1 = case label, $2 = denylist path
+    run_lint "$2"
+    [ "$status" -eq 0 ] || { printf '%s\n' "$out" >&2; fail "$1: expected exit 0, got $status"; }
+    echo "ok $n - $1"; n=$((n + 1))
+}
+# Asserts exit 1 (a violation, not a lint crash) AND that the expected rule
+# fired on the expected path — a pre-existing unrelated violation or an
+# exit-2 environment failure can no longer vacuously validate a case.
+expect_fail() {  # $1 = case label, $2 = expected rule tag, $3 = expected path fragment, $4 = denylist path
+    run_lint "$4"
+    [ "$status" -eq 1 ] || { printf '%s\n' "$out" >&2; fail "$1: expected exit 1, got $status"; }
+    hits="$(printf '%s\n' "$out" | grep -F "[$2]")" || { printf '%s\n' "$out" >&2; fail "$1: rule [$2] never fired"; }
+    printf '%s\n' "$hits" | grep -qF -- "$3" \
+        || { printf '%s\n' "$out" >&2; fail "$1: no [$2] violation reported on $3"; }
+    echo "ok $n - $1"; n=$((n + 1))
+}
+
+# 1. Delivered repo must pass — denylist neutralized (/dev/null) so an
+# operator's real entries cannot fail this case on clean content.
+expect_pass "delivered repo passes" /dev/null
+
+# 2. Each seeded violation must fail with the expected rule.
+cgnat_ip="100.64"".31.7"                       # Tailscale CGNAT range
+public_ip="51.15"".24.8"                       # public IPv4 outside doc ranges
+tailnet_host="vps-web.tail12""34"".ts"".net"   # MagicDNS tailnet hostname
+ts_key="tskey-""auth-kFAKEFAKE1234-FakeFakeFakeFake"
+key_block="-----BEG""IN OPENSSH PRIVATE KEY-----"
+infra_path="/home/""alice/apps/deploy"
+ula_v6="fd7a:115c:a1e0"":ab12:4843"":cd96:0:1" # Tailscale IPv6 ULA
+allow_marker="t-priv:al""low"
+denied_host="denied-host"".example"
+
+seed() {  # $1 = case name, $2 = expected rule tag, $3 = seeded content
+    printf '%s\n' "$3" > "$SEED_DIR/$1.txt"
+    expect_fail "seeded $1 fails" "$2" "$1.txt" /dev/null
+    rm -f "$SEED_DIR/$1.txt"
+}
+
+seed cgnat-ipv4     ipv4           "gateway: $cgnat_ip"
+seed public-ipv4    ipv4           "server: $public_ip"
+seed tailnet-host   tailnet-domain "host: $tailnet_host"
+seed tailscale-key  tailscale-key  "key: $ts_key"
+seed private-key    private-key    "$key_block"
+seed infra-path     home-path      "path: $infra_path"
+seed ipv6-ula       ipv6           "addr: $ula_v6"
+
+# 3. Violation in a file NAME must also fail.
+touch "$SEED_DIR/backup-$public_ip.txt"
+expect_fail "violating file name fails" ipv4 "(file name)" /dev/null
+rm -f "$SEED_DIR/backup-$public_ip.txt"
+
+# 4. Symlinks: a violating NAME and a violating TARGET must both fail
+# (the target text is read with readlink, never followed).
+ln -s "placeholder.example" "$SEED_DIR/backup-$public_ip"
+expect_fail "violating symlink name fails" ipv4 "(file name)" /dev/null
+rm -f "$SEED_DIR/backup-$public_ip"
+ln -s "$infra_path" "$SEED_DIR/link-to-infra"
+expect_fail "violating symlink target fails" home-path "(symlink target)" /dev/null
+rm -f "$SEED_DIR/link-to-infra"
+
+# 5. build/DerivedData are pruned at the repo root ONLY: committed content in
+# a nested dir of the same name must still be scanned...
+mkdir -p "$SEED_DIR/build"
+printf 'server: %s\n' "$public_ip" > "$SEED_DIR/build/leak.txt"
+expect_fail "nested build dir is scanned" ipv4 "leak.txt" /dev/null
+rm -rf "$SEED_DIR/build"
+# ...while the root build/ dir (xcodebuild output) stays exempt. Only the
+# probe file is added/removed — an existing build/ dir is left untouched.
+mkdir -p "$REPO_ROOT/build"
+printf 'server: %s\n' "$public_ip" > "$REPO_ROOT/build/.t-priv-probe.txt"
+expect_pass "root build dir is pruned" /dev/null
+rm -f "$REPO_ROOT/build/.t-priv-probe.txt"
+rmdir "$REPO_ROOT/build" 2>/dev/null || true
+
+# 6. Documentation-reserved values must NOT trigger the lint.
+printf 'doc examples: 192.0.2.10 198.51.100.7 203.0.113.5 127.0.0.1 2001:db8::1 vps-web.example db.invalid\n' \
+    > "$SEED_DIR/doc-values.txt"
+expect_pass "documentation-reserved values pass" /dev/null
+rm -f "$SEED_DIR/doc-values.txt"
+
+# 7. The allow marker suppresses pattern rules on its line...
+printf 'pattern example: %s %s\n' "$public_ip" "$allow_marker" > "$SEED_DIR/allowed.txt"
+expect_pass "allow marker suppresses pattern rules" /dev/null
+rm -f "$SEED_DIR/allowed.txt"
+
+# 8. ...but the denylist fires regardless: a denylisted string is a real
+# identifier by definition, never allowable.
+DENY_TMP="$(mktemp)" || fail "cannot create temp denylist"
+printf '%s\n' "$denied_host" > "$DENY_TMP"
+printf 'db: %s\n' "$denied_host" > "$SEED_DIR/denied.txt"
+expect_fail "denylisted string fails" denylist "denied.txt" "$DENY_TMP"
+printf 'db: %s %s\n' "$denied_host" "$allow_marker" > "$SEED_DIR/denied.txt"
+expect_fail "denylist overrides allow marker" denylist "denied.txt" "$DENY_TMP"
+rm -f "$SEED_DIR/denied.txt"
+
+echo "t-priv-selftest: PASS"

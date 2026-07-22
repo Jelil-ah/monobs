@@ -1,0 +1,32 @@
+name: t-priv
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: T-PRIV privacy lint
+        # The optional repo secret T_PRIV_DENYLIST_CONTENT holds the operator
+        # denylist (never committed). Absent secret -> empty file -> no-op.
+        env:
+          T_PRIV_DENYLIST_CONTENT: ${{ secrets.T_PRIV_DENYLIST_CONTENT }}
+        run: |
+          printf '%s\n' "$T_PRIV_DENYLIST_CONTENT" > "$RUNNER_TEMP/t-priv-denylist"
+          T_PRIV_DENYLIST="$RUNNER_TEMP/t-priv-denylist" ./scripts/t-priv
+      - name: T-PRIV self-test
+        run: ./scripts/t-priv-selftest
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (exact README command)
+        run: xcodebuild -project Monobs.xcodeproj -scheme Monobs -configuration Debug -derivedDataPath build build
