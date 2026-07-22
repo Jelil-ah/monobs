@@ -1,0 +1,194 @@
+#!/bin/bash
+# monobs-report contract self-test (AC1 of the report contract, v=1).
+# Verifies the EMITTER only: exactly one JSON document on stdout and nothing
+# else, `v` a JSON integer (initial value 1), `ts` in the documented UTC
+# format, `metrics` a non-empty object, and no state/threshold/color term
+# anywhere in the document — keys AND values. Also verifies the error
+# convention: collection failure => non-zero exit, diagnostics on stderr
+# only, no partial JSON on stdout.
+#
+# Every checker is proven non-vacuous against a seeded bad document before
+# the suite can pass. Exit 0 only if every case holds.
+set -u
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPORT="$REPO_ROOT/server/monobs-report"
+fail() { echo "monobs-report-selftest: FAIL — $1" >&2; exit 1; }
+
+# Temp dir + cleanup are installed before any case runs, so a previously
+# killed run can never poison this one, and every exit path cleans up.
+TMP_DIR="$REPO_ROOT/.monobs-report-selftest.tmp"
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+rm -rf "$TMP_DIR" && mkdir -p "$TMP_DIR" || fail "cannot create temp dir"
+
+[ -x "$REPORT" ] || fail "executable not found or not executable: $REPORT"
+
+n=1
+ok() { echo "ok $n - $1"; n=$((n + 1)); }
+
+# --- reusable checkers (each returns non-zero with a reason on stderr) ---
+
+# Exactly one JSON document and nothing else: JSON::PP->decode croaks on
+# any trailing non-whitespace, so the whole stream must be one document.
+check_single_doc() {  # $1 = file holding a stdout capture
+    perl -MJSON::PP -0777 -e '
+        my $raw = <STDIN>;
+        my $d = eval { JSON::PP->new->decode($raw) };
+        if (!defined $d) { print STDERR "not exactly one JSON document: $@"; exit 1; }
+        exit 0;
+    ' < "$1"
+}
+
+check_v_integer() {  # $1 = file — `v` must be a JSON integer (not a string)
+    perl -MJSON::PP -0777 -e '
+        my $raw = <STDIN>;
+        my $d = eval { JSON::PP->new->decode($raw) } or exit 1;
+        exists $d->{v} or do { print STDERR "v missing\n"; exit 1; };
+        # Raw-text check: an integer token, not "1" quoted or 1.0.
+        $raw =~ /^\s*\{\s*"v"\s*:\s*(?:0|[1-9][0-9]*)\s*,/
+            or do { print STDERR "v is not a JSON integer token\n"; exit 1; };
+        $d->{v} == 1 or do { print STDERR "v != 1 (got $d->{v})\n"; exit 1; };
+        exit 0;
+    ' < "$1"
+}
+
+check_ts_utc() {  # $1 = file — documented format: YYYY-MM-DDTHH:MM:SSZ (UTC)
+    perl -MJSON::PP -0777 -e '
+        my $d = eval { JSON::PP->new->decode(<STDIN>) } or exit 1;
+        exists $d->{ts} or do { print STDERR "ts missing\n"; exit 1; };
+        $d->{ts} =~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/
+            or do { print STDERR "ts not in documented UTC format: $d->{ts}\n"; exit 1; };
+        exit 0;
+    ' < "$1"
+}
+
+check_metrics_object() {  # $1 = file — non-empty JSON object
+    perl -MJSON::PP -0777 -e '
+        my $d = eval { JSON::PP->new->decode(<STDIN>) } or exit 1;
+        exists $d->{metrics} or do { print STDERR "metrics missing\n"; exit 1; };
+        ref $d->{metrics} eq "HASH" or do { print STDERR "metrics is not an object\n"; exit 1; };
+        keys %{$d->{metrics}} or do { print STDERR "metrics object is empty\n"; exit 1; };
+        exit 0;
+    ' < "$1"
+}
+
+# AD-8 / AC1: no state, threshold, or color term anywhere in the output —
+# keys AND values (the whole document, not just key names). The document is
+# split on every non-letter, so terms hide neither in snake_case keys nor
+# inside values. Canonical client-side state identifiers (vert, rouge-seuil,
+# rouge-injoignable, stale) are covered by their word stems.
+FORBIDDEN_TERMS='vert
+rouge
+stale
+seuil
+threshold
+color
+colour
+green
+red
+orange
+yellow
+state
+status
+warning
+critical
+alert'
+check_no_state_terms() {  # $1 = file
+    local found
+    found="$(tr -c 'A-Za-z' '\n' < "$1" | grep -Fxi -f <(printf '%s\n' "$FORBIDDEN_TERMS"))" && {
+        echo "state/threshold/color term(s) in output: $found" >&2
+        return 1
+    }
+    return 0
+}
+
+# --- 1. success run: exit 0, stderr empty ---
+out_f="$TMP_DIR/stdout" err_f="$TMP_DIR/stderr"
+status=0
+"$REPORT" > "$out_f" 2> "$err_f" || status=$?
+[ "$status" -eq 0 ] || { cat "$err_f" >&2; fail "expected exit 0, got $status"; }
+ok "monobs-report exits 0 on this host"
+[ -s "$err_f" ] && { cat "$err_f" >&2; fail "stderr not empty on success"; }
+ok "stderr is empty on success"
+
+# --- 2. contract assertions on the captured document ---
+check_single_doc "$out_f" || fail "stdout is not exactly one JSON document ($out_f)"
+ok "stdout is exactly one JSON document and nothing else"
+check_v_integer "$out_f" || fail "v contract violated ($out_f)"
+ok "v is the JSON integer 1"
+check_ts_utc "$out_f" || fail "ts contract violated ($out_f)"
+ok "ts is UTC in the documented format"
+check_metrics_object "$out_f" || fail "metrics contract violated ($out_f)"
+ok "metrics is a non-empty object"
+check_no_state_terms "$out_f" || fail "AD-8 violated: state/threshold/color term in output ($out_f)"
+ok "no state/threshold/color term anywhere in the document (keys and values)"
+
+# --- 3. checkers are proven non-vacuous against seeded bad documents ---
+seed="$TMP_DIR/seed.json"
+
+printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":{"a":1}}\n{"second":true}\n' > "$seed"
+check_single_doc "$seed" 2> /dev/null && fail "single-document checker passed two documents"
+ok "seeded double document fails the single-document check"
+
+printf '{"v":"1","ts":"2026-01-01T00:00:00Z","metrics":{"a":1}}\n' > "$seed"
+check_v_integer "$seed" 2> /dev/null && fail "v checker passed a quoted string"
+ok "seeded string v fails the integer check"
+
+printf '{"v":"1","ts":"2026-01-01T00:00:00Z","metrics":{"v":1}}\n' > "$seed"
+check_v_integer "$seed" 2> /dev/null && fail "v checker accepted a quoted top-level v because metrics contained an integer v"
+ok "quoted top-level v fails even when metrics contains an integer v"
+
+printf '{"v":1,"ts":"01/01/2026 00:00","metrics":{"a":1}}\n' > "$seed"
+check_ts_utc "$seed" 2> /dev/null && fail "ts checker passed a non-UTC format"
+ok "seeded non-UTC ts fails the format check"
+
+printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":[]}\n' > "$seed"
+check_metrics_object "$seed" 2> /dev/null && fail "metrics checker passed an array"
+ok "seeded metrics array fails the object check"
+
+# A state identifier in a VALUE (not a key) must fail — the check covers the
+# whole document (review F1: AC1 says "output", not "keys").
+printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":{"a":"vert"}}\n' > "$seed"
+check_no_state_terms "$seed" 2> /dev/null && fail "state-term checker missed a state value"
+ok "seeded state identifier in a value fails the AD-8 check"
+
+printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":{"rouge_seuil":1}}\n' > "$seed"
+check_no_state_terms "$seed" 2> /dev/null && fail "state-term checker missed a state key"
+ok "seeded state identifier in a key fails the AD-8 check"
+rm -f "$seed"
+
+# --- 4. error convention (implementation convention v1): collection failure
+# => non-zero exit, diagnostics on stderr naming the unreadable source, and
+# NO partial JSON on stdout ---
+mkdir -p "$TMP_DIR/empty-proc" || fail "cannot create empty proc root"
+status=0
+MONOBS_REPORT_PROC="$TMP_DIR/empty-proc" "$REPORT" > "$out_f" 2> "$err_f" || status=$?
+[ "$status" -ne 0 ] || fail "expected non-zero exit on collection failure, got 0"
+ok "collection failure exits non-zero"
+[ -s "$out_f" ] && { cat "$out_f" >&2; fail "stdout not empty on failure (partial JSON leaked)"; }
+ok "stdout is empty on failure — no partial JSON"
+grep -q "^monobs-report: " "$err_f" || { cat "$err_f" >&2; fail "stderr diagnostic missing the monobs-report: prefix"; }
+ok "stderr carries a monobs-report: diagnostic"
+grep -qF "$TMP_DIR/empty-proc" "$err_f" || { cat "$err_f" >&2; fail "stderr diagnostic does not name the unreadable path"; }
+ok "stderr diagnostic names the unreadable source path"
+
+# A syntactically numeric proc value that is not a valid JSON number must fail
+# collection before the document is emitted (review F2: no leading zeroes).
+mkdir -p "$TMP_DIR/leading-zero-proc" || fail "cannot create leading-zero proc root"
+printf '007 0.00 0.00 1/1 1\n' > "$TMP_DIR/leading-zero-proc/loadavg"
+printf '1.00 0.00\n' > "$TMP_DIR/leading-zero-proc/uptime"
+printf 'MemAvailable: 1 kB\n' > "$TMP_DIR/leading-zero-proc/meminfo"
+status=0
+MONOBS_REPORT_PROC="$TMP_DIR/leading-zero-proc" "$REPORT" > "$out_f" 2> "$err_f" || status=$?
+[ "$status" -ne 0 ] || fail "expected non-zero exit for a leading-zero JSON number, got 0"
+ok "leading-zero numeric input exits non-zero"
+[ -s "$out_f" ] && { cat "$out_f" >&2; fail "stdout not empty after leading-zero rejection"; }
+ok "leading-zero rejection leaves stdout empty"
+grep -qF "unexpected value in $TMP_DIR/leading-zero-proc/loadavg" "$err_f" || {
+    cat "$err_f" >&2
+    fail "stderr does not identify the invalid leading-zero source"
+}
+ok "leading-zero rejection identifies the invalid source"
+
+echo "monobs-report-selftest: PASS"

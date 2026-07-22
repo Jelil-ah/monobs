@@ -1,0 +1,17 @@
+name: report-contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  report-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: monobs-report contract self-test
+        run: ./server/monobs-report-selftest

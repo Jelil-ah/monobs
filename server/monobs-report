@@ -1,0 +1,65 @@
+#!/bin/sh
+# monobs-report — server side of Monobs (AD-8, AD-9, AD-10).
+# Emits exactly one versioned JSON document of raw facts on stdout:
+#   {"v":1,"ts":"<UTC>","metrics":{...}}
+# Contract: docs/report-contract.md. Deployment: docs/deploy-forced-command.md.
+#
+# Read-only by construction (T-RO): reads /proc and the system clock,
+# writes nothing, opens no network connection, runs no side-effecting
+# command. POSIX sh + standard utilities only — nothing to install on the
+# host.
+#
+# Error convention (implementation convention v1, see the contract doc):
+# every fact is collected and validated BEFORE anything is printed; the
+# document is emitted in a single final write. On any collection failure:
+# non-zero exit, one diagnostic line on stderr, nothing on stdout — a
+# partial document is never presented as valid.
+set -u
+
+# Test seam for selftest failure paths only: root of the proc filesystem,
+# still read-only. Never set in production. The forced command (AD-9) runs
+# without arguments, and sshd's default AcceptEnv does not forward this
+# variable.
+PROC="${MONOBS_REPORT_PROC:-/proc}"
+
+fail() { printf 'monobs-report: %s\n' "$1" >&2; exit 1; }
+
+# Facts must serialize as plain JSON numbers; anything else is a
+# collection failure, not something to emit.
+is_number() {
+    case "$1" in
+        '' | *[!0-9.]* | . | .* | *. | *.*.* | 0[0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# --- collect and validate every fact first (read-only) ---
+# The metrics KEYS below are placeholders — provisional, pending Q1
+# ratification. Only the {v, ts, metrics} envelope is ratified (AD-10);
+# the metric set is an open question this executable must not settle.
+
+[ -r "$PROC/loadavg" ] || fail "cannot read $PROC/loadavg"
+read -r loadavg_1m _ < "$PROC/loadavg" || fail "cannot read $PROC/loadavg"
+is_number "$loadavg_1m" || fail "unexpected value in $PROC/loadavg"
+
+[ -r "$PROC/uptime" ] || fail "cannot read $PROC/uptime"
+read -r uptime_raw _ < "$PROC/uptime" || fail "cannot read $PROC/uptime"
+uptime_s="${uptime_raw%%.*}"
+is_number "$uptime_s" || fail "unexpected value in $PROC/uptime"
+
+[ -r "$PROC/meminfo" ] || fail "cannot read $PROC/meminfo"
+mem_available_kib="$(awk '/^MemAvailable:/ { print $2; exit }' "$PROC/meminfo")" \
+    || fail "cannot read $PROC/meminfo"
+is_number "$mem_available_kib" || fail "MemAvailable not found in $PROC/meminfo"
+
+# ts is informative only (AD-10): freshness is anchored on client-side
+# reception of the last valid report, never on this value.
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || fail "cannot read the system clock"
+case "$ts" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+    *) fail "unexpected timestamp format: $ts" ;;
+esac
+
+# --- single final write: the whole document or nothing ---
+printf '{"v":1,"ts":"%s","metrics":{"loadavg_1m":%s,"uptime_s":%s,"mem_available_kib":%s}}\n' \
+    "$ts" "$loadavg_1m" "$uptime_s" "$mem_available_kib"
