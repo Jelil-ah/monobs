@@ -67,6 +67,18 @@ final class WidgetAgeAndBuilderTests: XCTestCase {
         XCTAssertEqual(agedLater, 330, "age must grow to 330 s, not freeze at the 30 s write-time duration")
     }
 
+    // D-3 / FR5: age text is formatted in legible, deterministic tiers
+    // (s → min → h → j). Covers each tier at a representative value plus the
+    // never-received fallback. Manual tiers (not a localized formatter) keep this
+    // assertion stable regardless of test-host locale.
+    func testAgeTextIsFormattedInLegibleTiers() {
+        XCTAssertEqual(WidgetPresentation.ageText(30), "il y a 30s")     // seconds
+        XCTAssertEqual(WidgetPresentation.ageText(90), "il y a 1min")    // minutes
+        XCTAssertEqual(WidgetPresentation.ageText(7200), "il y a 2h")    // hours
+        XCTAssertEqual(WidgetPresentation.ageText(259_200), "il y a 3j") // days
+        XCTAssertEqual(WidgetPresentation.ageText(nil), "jamais")        // never received
+    }
+
     // AC8: the builder carries the reducer's DERIVED state verbatim (no
     // re-derivation) and preserves per-host mapping.
     func testBuilderCarriesDerivedStateVerbatim() {

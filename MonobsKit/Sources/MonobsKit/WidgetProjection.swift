@@ -108,10 +108,22 @@ public enum WidgetPresentation {
     }
 
     /// Age text (FR5). `nil` ⇒ "jamais", never "0 s" for a never-received host.
+    ///
+    /// Manual, deterministic tiers (s → min → h → j): the widget of WORST hosts
+    /// shows large ages as the norm, so raw seconds ("il y a 7200 s") violate the
+    /// legible-age requirement (D-3). Not `RelativeDateTimeFormatter` — that is
+    /// locale-dependent and non-deterministic, which would break the unit tests.
+    /// `age` is guaranteed non-negative (`WidgetAge.age` fails closed to `nil` on
+    /// a future timestamp), so no negative branch is needed here.
     public static func ageText(_ age: TimeInterval?) -> String {
         guard let age else { return "jamais" }
-        guard age >= 0 else { return "—" }
-        return "il y a \(Int(age.rounded())) s"
+        let seconds = Int(age.rounded())
+        if seconds < 60 { return "il y a \(seconds)s" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "il y a \(minutes)min" }
+        let hours = minutes / 60
+        if hours < 24 { return "il y a \(hours)h" }
+        return "il y a \(hours / 24)j"
     }
 
     /// Overflow indicator text (CA-6). Neutral, no direction visuelle.

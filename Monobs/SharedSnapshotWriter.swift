@@ -21,6 +21,16 @@ import WidgetKit
 /// atomic (temp + rename); a single writer plus atomic writes is the only
 /// concurrency precaution needed.
 enum SharedSnapshotWriter {
+    /// Signature of the last STATE actually written (list of `hostID=state`,
+    /// sorted by host ID). Used to gate `reloadTimelines` (D-2): the poll loop
+    /// writes every cycle, but the WidgetKit reload budget is scarce — spending
+    /// it on every write (including pure age drift, which changes on every cycle)
+    /// gets the timeline throttled and makes the widget MORE stale, not less.
+    /// The age is projected inside the extension from the absolute timestamp we
+    /// always persist, so it keeps advancing without a reload; only a real state
+    /// change needs to invalidate the timeline. `nil` ⇒ nothing written yet.
+    private static var lastStateSignature: String?
+
     /// Serializes the projection into the shared container. Best-effort: an I/O
     /// failure must never crash or block the poll loop — the widget degrades
     /// gracefully on a missing/stale file (AC5).
@@ -32,12 +42,22 @@ enum SharedSnapshotWriter {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
             // Atomic: write a temporary then rename — the extension never sees a
-            // half-written file.
+            // half-written file. The writer stays the source of truth, so we write
+            // EVERY cycle (freshness timestamp must be current).
             try data.write(to: fileURL, options: .atomic)
             #if canImport(WidgetKit)
-            // Ask WidgetKit to reload; the timeline cadence (age growth via future
-            // entries) is a presentation choice inside the extension.
-            WidgetCenter.shared.reloadTimelines(ofKind: SharedSnapshotLocation.widgetKind)
+            // Only spend a WidgetKit reload when the projected STATE changed —
+            // NOT on age drift (age advances in the extension off the persisted
+            // timestamp, so it needs no reload). Sorted by host ID so a pure
+            // reordering that leaves every host's state unchanged does not reload.
+            let signature = projection.hosts
+                .map { "\($0.hostID)=\($0.state)" }
+                .sorted()
+                .joined(separator: "|")
+            if signature != lastStateSignature {
+                lastStateSignature = signature
+                WidgetCenter.shared.reloadTimelines(ofKind: SharedSnapshotLocation.widgetKind)
+            }
             #endif
         } catch {
             // Swallow — read-only observability must never fail the poll cycle.
