@@ -8,10 +8,37 @@
 
 /* Begin PBXBuildFile section */
 		53E4258330110B57009BA42A /* MonobsKit in Frameworks */ = {isa = PBXBuildFile; productRef = 53E4258530110B57009BA42A /* MonobsKit */; };
+		A3E4260000000000C0DE000A /* MonobsKit in Frameworks */ = {isa = PBXBuildFile; productRef = A3E4260000000000C0DE000B /* MonobsKit */; };
+		A3E4260000000000C0DE000C /* MonobsWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A3E4260000000000C0DE0001 /* MonobsWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A3E4260000000000C0DE000F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 53E4256D30110B53009BA42A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A3E4260000000000C0DE0003;
+			remoteInfo = MonobsWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A3E4260000000000C0DE000D /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A3E4260000000000C0DE000C /* MonobsWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		53E4257530110B53009BA42A /* Monobs.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Monobs.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3E4260000000000C0DE0001 /* MonobsWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MonobsWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -20,7 +47,25 @@
 			path = Monobs;
 			sourceTree = "<group>";
 		};
+		A3E4260000000000C0DE0002 /* MonobsWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A3E4260000000000C0DE0010 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
+			path = MonobsWidget;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A3E4260000000000C0DE0010 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A3E4260000000000C0DE0003 /* MonobsWidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		53E4257230110B53009BA42A /* Frameworks */ = {
@@ -31,6 +76,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A3E4260000000000C0DE0008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A3E4260000000000C0DE000A /* MonobsKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -38,6 +91,7 @@
 			isa = PBXGroup;
 			children = (
 				53E4257730110B53009BA42A /* Monobs */,
+				A3E4260000000000C0DE0002 /* MonobsWidget */,
 				53E4257630110B53009BA42A /* Products */,
 			);
 			sourceTree = "<group>";
@@ -46,6 +100,7 @@
 			isa = PBXGroup;
 			children = (
 				53E4257530110B53009BA42A /* Monobs.app */,
+				A3E4260000000000C0DE0001 /* MonobsWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -60,10 +115,12 @@
 				53E4257130110B53009BA42A /* Sources */,
 				53E4257230110B53009BA42A /* Frameworks */,
 				53E4257330110B53009BA42A /* Resources */,
+				A3E4260000000000C0DE000D /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A3E4260000000000C0DE000E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				53E4257730110B53009BA42A /* Monobs */,
@@ -76,6 +133,29 @@
 			productReference = 53E4257530110B53009BA42A /* Monobs.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A3E4260000000000C0DE0003 /* MonobsWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A3E4260000000000C0DE0004 /* Build configuration list for PBXNativeTarget "MonobsWidgetExtension" */;
+			buildPhases = (
+				A3E4260000000000C0DE0007 /* Sources */,
+				A3E4260000000000C0DE0008 /* Frameworks */,
+				A3E4260000000000C0DE0009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A3E4260000000000C0DE0002 /* MonobsWidget */,
+			);
+			name = MonobsWidgetExtension;
+			packageProductDependencies = (
+				A3E4260000000000C0DE000B /* MonobsKit */,
+			);
+			productName = MonobsWidgetExtension;
+			productReference = A3E4260000000000C0DE0001 /* MonobsWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -87,6 +167,9 @@
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
 					53E4257430110B53009BA42A = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					A3E4260000000000C0DE0003 = {
 						CreatedOnToolsVersion = 26.6;
 					};
 				};
@@ -109,6 +192,7 @@
 			projectRoot = "";
 			targets = (
 				53E4257430110B53009BA42A /* Monobs */,
+				A3E4260000000000C0DE0003 /* MonobsWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -121,10 +205,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A3E4260000000000C0DE0009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		53E4257130110B53009BA42A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3E4260000000000C0DE0007 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -321,6 +419,67 @@
 			};
 			name = Release;
 		};
+		A3E4260000000000C0DE0005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				/* Story 3.2 RISQUE #2 (b) + Winston §6: the extension MIRRORS the host
+				   app — sandbox OFF so FileManager resolves the SAME real home as the
+				   app (the shared file path RISQUE #2 (b) relies on), ad-hoc signing
+				   (no DEVELOPMENT_TEAM), NO App Group entitlement. */
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MonobsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Monobs;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.jelilah.Monobs.MonobsWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A3E4260000000000C0DE0006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				/* Story 3.2 RISQUE #2 (b) + Winston §6: extension mirrors the app —
+				   same rationale as the Debug configuration above. */
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MonobsWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Monobs;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.jelilah.Monobs.MonobsWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -342,7 +501,24 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		A3E4260000000000C0DE0004 /* Build configuration list for PBXNativeTarget "MonobsWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A3E4260000000000C0DE0005 /* Debug */,
+				A3E4260000000000C0DE0006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin PBXTargetDependency section */
+		A3E4260000000000C0DE000E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A3E4260000000000C0DE0003 /* MonobsWidgetExtension */;
+			targetProxy = A3E4260000000000C0DE000F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCLocalSwiftPackageReference section */
 		53E4258430110B57009BA42A /* XCLocalSwiftPackageReference "MonobsKit" */ = {
@@ -353,6 +529,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		53E4258530110B57009BA42A /* MonobsKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = MonobsKit;
+		};
+		A3E4260000000000C0DE000B /* MonobsKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = MonobsKit;
 		};

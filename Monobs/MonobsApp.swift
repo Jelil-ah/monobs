@@ -69,8 +69,11 @@ private final class MonobsRuntime {
                 // the projector, which forwards it to the reducer for the FR10.1
                 // override.
                 tailscaleFact.update(tailscaleDetector.tailscaleLocalUp)
+                // Read the snapshots ONCE so the projection and the shared-container
+                // writer (Story 3.2) observe exactly the same cycle.
+                let snapshots = store.allSnapshots()
                 let projection = MenuBarProjector.project(hosts: hosts,
-                                                          snapshots: store.allSnapshots(),
+                                                          snapshots: snapshots,
                                                           now: Date(),
                                                           tailscaleLocalUp: tailscaleFact.current)
                 // Story 2.4 (AD-13): AFTER the projection, feed the already-derived
@@ -87,6 +90,12 @@ private final class MonobsRuntime {
                     projection.hosts.map { ($0.hostID, $0.state) },
                     uniquingKeysWith: { first, _ in first })
                 coordinator.processCycle(currentStates: currentStates)
+                // Story 3.2 (AD-12): serialize the ALREADY-derived projection plus
+                // the ABSOLUTE freshness instant (read from `snapshots`, NOT the age
+                // duration) into the shared container for the WidgetKit extension.
+                // Same hook as the projection/notification — the app is the sole
+                // writer; the widget only reads.
+                SharedSnapshotWriter.write(projection: projection, snapshots: snapshots)
                 DispatchQueue.main.async { model.projection = projection }
             }
         )
@@ -101,10 +110,14 @@ private final class MonobsRuntime {
         // Initial projection before the first cycle: honest degenerate/stale
         // view (no data yet), never a premature vert. Passes the primed
         // `tailscaleFact.current` — fail-closed at startup.
+        let initialSnapshots = store.allSnapshots()
         model.projection = MenuBarProjector.project(hosts: hosts,
-                                                    snapshots: store.allSnapshots(),
+                                                    snapshots: initialSnapshots,
                                                     now: Date(),
                                                     tailscaleLocalUp: tailscaleFact.current)
+        // Story 3.2: prime the shared container before the first poll so the widget
+        // has an honest (empty/never-received) snapshot to read immediately.
+        SharedSnapshotWriter.write(projection: model.projection, snapshots: initialSnapshots)
         pollingLoop.start()
     }
 
