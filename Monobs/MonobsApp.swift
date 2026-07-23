@@ -79,8 +79,13 @@ private final class MonobsRuntime {
                 // NEVER on the pre-poll initial projection below — so the FIRST poll
                 // cycle IS the silent baseline (cold start muet even if a host is
                 // already red: previous map empty ⇒ nil ⇒ muet).
-                let currentStates = Dictionary(uniqueKeysWithValues:
-                    projection.hosts.map { ($0.hostID, $0.state) })
+                // Don't crash the poll thread on a duplicate hostID: keep the
+                // first occurrence instead of a precondition failure. Symmetric
+                // with the UI `ForEach(id: \.hostID)`, which already tolerates a
+                // duplicate rather than aborting.
+                let currentStates = Dictionary(
+                    projection.hosts.map { ($0.hostID, $0.state) },
+                    uniquingKeysWith: { first, _ in first })
                 coordinator.processCycle(currentStates: currentStates)
                 DispatchQueue.main.async { model.projection = projection }
             }

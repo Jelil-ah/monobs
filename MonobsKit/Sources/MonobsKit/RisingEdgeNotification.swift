@@ -76,6 +76,15 @@ public final class NotificationCoordinator: @unchecked Sendable {
     /// `swift test` and revealed only under TSan or in prod. So the lock is the
     /// DEFAULT, not "optional": it guards the whole decide→emit→write-back
     /// sequence, matching the codebase's defense-in-depth `NSLock` pattern.
+    ///
+    /// IMPORTANT — what the lock does NOT buy: it gives mutual exclusion (no
+    /// data race), but NOT cycle ORDERING. Two concurrent `processCycle` calls
+    /// acquire the lock in an unspecified order, so a stale older cycle could
+    /// win the lock after a fresher red cycle and overwrite its write-back —
+    /// yielding a double-notification for a single rising edge. The lock alone
+    /// does not make AD-16 safe. Before wiring the manual refresh in Story 3.1,
+    /// it MUST be routed onto the same poll-queue (serializing cycles), not rely
+    /// on this lock. Explicit debt to honor in 3.1.
     private let lock = NSLock()
     /// Starts EMPTY ⇒ the first `processCycle` sees `previous == nil` for every
     /// host ⇒ zero emission, and the write-back lays the baseline (cold start

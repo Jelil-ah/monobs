@@ -46,6 +46,9 @@ enum UserNotificationEmitter {
         let content = UNMutableNotificationContent()
         content.title = "Monobs"
         content.body = "\(hostID) — \(MenuBarPresentation.label(for: state))"
+        // We requested `.sound` authorization — actually attach a sound, else the
+        // notifications are silent (permission granted but no audible cue).
+        content.sound = .default
         let request = UNNotificationRequest(identifier: UUID().uuidString,
                                             content: content,
                                             trigger: nil)
