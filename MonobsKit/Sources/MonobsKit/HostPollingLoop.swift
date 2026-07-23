@@ -52,18 +52,25 @@ public final class HostPollingLoop: @unchecked Sendable {
         hosts: [ObservedHost],
         snapshotStore: SnapshotStore,
         cadence: TimeInterval = defaultCadence,
-        queue: DispatchQueue = DispatchQueue(label: "monobs.host-polling"),
         now: @escaping @Sendable () -> Date = { Date() },
         pollHost: @escaping @Sendable (ObservedHost) -> PollOutcome = {
             SSHPollRunner.poll(host: $0)
         },
         onCycleComplete: (@Sendable () -> Void)? = nil
     ) {
+        // CONTRACT: this queue MUST be serial — a concurrent queue reintroduces
+        // DEBT.md#D-1. The no-double-in-flight guarantee rests entirely on
+        // serial execution: the `cycleExecuting` gate only holds when at most one
+        // `performCycle` runs at a time. It is constructed here (not injected) so
+        // the invariant is enforced by construction and cannot be broken silently
+        // by a caller passing `.concurrent`. Tests inject a serial-by-construction
+        // scheduler through the internal designated init instead.
+        let serialQueue = DispatchQueue(label: "monobs.host-polling")
         self.init(hosts: hosts,
                   snapshotStore: snapshotStore,
                   cadence: cadence,
                   now: now,
-                  scheduler: DispatchHostPollingScheduler(queue: queue),
+                  scheduler: DispatchHostPollingScheduler(queue: serialQueue),
                   pollHost: pollHost,
                   onCycleComplete: onCycleComplete)
     }
@@ -140,23 +147,31 @@ public final class HostPollingLoop: @unchecked Sendable {
             return
         }
         immediateCyclePending = true
+        let activeGeneration = generation
         lock.unlock()
-        enqueueImmediateCycle()
+        enqueueImmediateCycle(generation: activeGeneration)
     }
 
     /// Posts one immediate cycle on the internal serial queue (via the same
     /// `scheduler` seam as the planned cadence), so it is ordered behind any cycle
-    /// currently in flight.
-    private func enqueueImmediateCycle() {
+    /// currently in flight. Carries the generation captured at request time so the
+    /// deferred cycle honors the running-gate symmetrically to the planned path.
+    private func enqueueImmediateCycle(generation: UInt64) {
         scheduler.schedule(at: scheduler.nowNanoseconds()) { [weak self] in
-            self?.performCycle()
+            self?.performCycle(generation: generation)
         }
     }
 
     /// The single funnel through which every cycle (planned or manual) runs, so
     /// `cycleExecuting` is authoritative and a refresh mid-cycle is always
     /// deferred to a trailing cycle rather than reentered.
-    private func performCycle() {
+    private func performCycle(generation: UInt64) {
+        // Symmetric to the scheduled path (`scheduleCycle` guards the same way):
+        // a manual/trailing cycle owed before a stop() or restart must NOT poll,
+        // notify, or re-enqueue once the generation has moved on. Without this the
+        // manual path would bypass the running-gate — a refresh after stop() (or
+        // before start()), and the owed trailing cycle, would run anyway (D-1).
+        guard isRunning(generation: generation) else { return }
         lock.lock()
         // Any request outstanding at the moment this cycle STARTS is serviced by
         // this cycle (it happens-after the request). Requests arriving during
@@ -171,7 +186,7 @@ public final class HostPollingLoop: @unchecked Sendable {
         cycleExecuting = false
         let owed = immediateCyclePending
         lock.unlock()
-        if owed { enqueueImmediateCycle() }
+        if owed { enqueueImmediateCycle(generation: generation) }
     }
 
     /// Synchronous cycle seam used by focused tests and future manual refresh.
@@ -205,7 +220,7 @@ public final class HostPollingLoop: @unchecked Sendable {
             // Route through the shared funnel so `cycleExecuting` is authoritative
             // and a manual refresh arriving mid-cycle is deferred (D-1), never
             // reentered. No refresh outstanding ⇒ behaviour identical to before.
-            self.performCycle()
+            self.performCycle(generation: generation)
         }
     }
 

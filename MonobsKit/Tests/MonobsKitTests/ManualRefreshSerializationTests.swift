@@ -5,14 +5,26 @@ import XCTest
 /// SERIALIZED on the same poll-queue as the scheduled poller, never a concurrent
 /// `runOneCycle`/`processCycle` from the UI thread.
 ///
-/// [F-W1, non-negotiable] These tests exercise the `HostPollingLoop` layer via an
-/// INJECTED scheduler spy — NOT `NotificationCoordinator.processCycle` called
-/// twice. A sequential double-`processCycle` test would be VACUOUS: the
-/// coordinator's `NSLock` already serializes sequential calls, so it would pass
-/// GREEN even without `requestImmediateCycle()`, proving nothing. The negative
-/// control here is DETERMINISTIC through the injected scheduler (proving the
-/// refresh is ENQUEUED on the serial queue, not executed reentrantly on the
-/// calling thread) — never real-thread timing (flaky).
+/// [F-W1] These tests exercise the `HostPollingLoop` layer via an INJECTED
+/// scheduler spy — NOT `NotificationCoordinator.processCycle` called twice. A
+/// sequential double-`processCycle` test would be VACUOUS: the coordinator's
+/// `NSLock` already serializes sequential calls, so it would pass GREEN even
+/// without `requestImmediateCycle()`, proving nothing. Everything here is
+/// DETERMINISTIC through the injected scheduler — never real-thread timing (flaky).
+///
+/// Scope of each test, stated honestly:
+///   • test 1 (`…DeferredNotReentrant`) is a REGRESSION guard against the original
+///     D-1 bug — a manual refresh calling `runOneCycle()` directly and reentrantly.
+///     It proves the refresh is ENQUEUED on the serial queue (no nested `poll`
+///     between `requested` and `complete`) and that the trailing cycle is not
+///     dropped. It does NOT, on its own, prove the coalescing/deferral flag is
+///     load-bearing: it would stay green even if the deferral branch were removed,
+///     because the async scheduling alone prevents reentrance.
+///   • test 2 (`…CoalesceToSingleTrailingCycle`) is where the coalescing invariant
+///     is actually proven: three requests during one in-flight cycle collapse to
+///     exactly one trailing cycle (`pendingCount` 2, never 4).
+///   • test 4 (`…DroppedAfterStop`) is the negative control for the running-gate:
+///     an owed trailing cycle does NOT run once stop() bumps the generation (D-1).
 final class ManualRefreshSerializationTests: XCTestCase {
     private let host = ObservedHost(name: "web", host: "vps-web.example", user: "deploy")
 
@@ -56,8 +68,11 @@ final class ManualRefreshSerializationTests: XCTestCase {
         // re-scheduled its planned tick AND enqueued the trailing immediate cycle.
         XCTAssertEqual(scheduler.pendingCount, 2, "planned re-tick + deferred trailing refresh both enqueued")
 
-        // Draining the queue runs the trailing refresh cycle (F-W3: not dropped).
-        loop.stop()                            // silence the planned cadence tick
+        // Draining runs the trailing refresh cycle (F-W3: not dropped). The
+        // trailing deadline (now) is earlier than the planned re-tick (now+60s),
+        // so runNext() picks it first — the loop stays running so the gate lets
+        // it execute (the stop()-then-drain trick would now suppress it: see
+        // test 4, which relies on exactly that to prove D-1's running-gate).
         XCTAssertTrue(scheduler.runNext())
         XCTAssertEqual(events.values.filter { $0 == "poll:vps-web.example" }.count, 2,
                        "the trailing refresh cycle ran exactly once, after cycle #1")
@@ -94,11 +109,12 @@ final class ManualRefreshSerializationTests: XCTestCase {
         // immediate — pendingCount is 2, never 4.
         XCTAssertEqual(scheduler.pendingCount, 2,
                        "planned re-tick + exactly one coalesced trailing refresh (three requests → one)")
-        loop.stop()                              // stop the cadence; the planned tick will no-op
+        // The trailing (deadline now) is earlier than the planned re-tick
+        // (now+60s), so runNext() drains it first while the loop is still running.
         XCTAssertTrue(scheduler.runNext())       // the single trailing refresh cycle (earliest deadline)
         XCTAssertEqual(cycles.value, 2, "one planned + one coalesced trailing cycle")
         XCTAssertEqual(scheduler.pendingCount, 1,
-                       "only the now-stopped planned tick remains — no second immediate cycle was enqueued")
+                       "only the still-pending planned re-tick remains — no second immediate cycle was enqueued")
     }
 
     // MARK: - AC6 harm: a single rising edge with an interleaved refresh emits
@@ -142,11 +158,59 @@ final class ManualRefreshSerializationTests: XCTestCase {
         XCTAssertEqual(spy.count, 0)
         XCTAssertTrue(scheduler.runNext())         // cycle 2: stale→red rising edge, +1 (+refresh queued)
         XCTAssertEqual(spy.count, 1, "one rising edge ⇒ exactly one emission")
-        loop.stop()                                // drop the planned cadence tick
+        // The trailing refresh (deadline now) precedes the planned re-tick, so
+        // runNext() drains it while the loop is still running — the cycle actually
+        // executes red→red and we prove it adds no second emission.
         XCTAssertTrue(scheduler.runNext())         // cycle 3: trailing refresh, red→red, +0
         XCTAssertEqual(spy.count, 1,
                        "the interleaved refresh did NOT double-notify the single rising edge (D-1 closed)")
         XCTAssertFalse(overlap.overlapped, "cycles never overlapped — serialized on the poll-queue")
+    }
+
+    // MARK: - D-1 running-gate: an owed trailing cycle must NOT run after stop()
+    // bumps the generation. Symmetric to the scheduled path's isRunning(generation:)
+    // guard — closes the D-1 residue where the manual path bypassed it.
+
+    func testTrailingRefreshOwedIsDroppedAfterStop() {
+        let scheduler = VirtualRefreshScheduler(now: 10_000_000_000)
+        let events = EventLog()
+        var loop: HostPollingLoop!
+        var didRequest = false
+        loop = HostPollingLoop(
+            hosts: [host],
+            snapshotStore: SnapshotStore(),
+            cadence: 60,
+            scheduler: scheduler,
+            pollHost: { _ in
+                events.append("poll")
+                // Owe a trailing cycle from inside cycle #1.
+                if !didRequest {
+                    didRequest = true
+                    loop.requestImmediateCycle()
+                }
+                return .reportAbsent(exitCode: 3)
+            },
+            onCycleComplete: { events.append("complete") }
+        )
+
+        XCTAssertTrue(loop.start())
+        XCTAssertTrue(scheduler.runNext())            // cycle #1 (+ owed trailing)
+        XCTAssertEqual(scheduler.pendingCount, 2, "planned re-tick + owed trailing refresh")
+
+        loop.stop()                                   // running=false, generation bumped
+
+        // NEGATIVE CONTROL for the running-gate: draining the trailing (earliest
+        // deadline) must NOT poll or complete again — the manual path now honors
+        // isRunning(generation:) exactly like the scheduled path. Without the gate
+        // this owed cycle would run a stray poll after stop() (D-1 residue).
+        XCTAssertTrue(scheduler.runNext())            // trailing — bails on the gate
+        XCTAssertEqual(events.values, ["poll", "complete"],
+                       "the owed trailing cycle did NOT run after stop() bumped the generation")
+
+        // The planned re-tick likewise no-ops on the generation mismatch, and no
+        // trailing was re-enqueued — the queue drains cleanly to empty.
+        XCTAssertTrue(scheduler.runNext())            // planned tick — also bails
+        XCTAssertEqual(scheduler.pendingCount, 0, "no cycle re-enqueued a trailing after stop()")
     }
 }
 
