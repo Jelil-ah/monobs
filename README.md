@@ -2,9 +2,14 @@
 
 A read-only macOS menu bar surface showing the state of VPS hosts, reached over SSH through a Tailscale tailnet.
 
-Current status: **read-only polling core** — the visible menu bar surface remains
-a static placeholder while the app polls configured hosts and keeps per-host
-facts in memory. No server action, notification, widget, or popover exists.
+Current status: **read-only monitoring app** — the app polls configured hosts,
+reduces per-host facts into a derived state through a single pure reducer, and
+projects that state across three surfaces (menu bar, popover, widget) plus a
+local macOS notification on each transition to red. Everything is read-only: no
+surface can act on a server. Rendering is native and neutral — no visual
+direction is committed yet (design gated). The threshold-based red (`rouge-seuil`,
+metric over a limit) is not shipped: the app produces `vert`, `rouge-injoignable`
+(unreachable) and `stale` today.
 
 ## Requirements
 
@@ -21,6 +26,30 @@ open build/Build/Products/Debug/Monobs.app
 ```
 
 The app is a menu bar agent (no Dock icon): look for the dashed-circle icon in the menu bar.
+
+## Surfaces
+
+All four surfaces project the **same** derived snapshot from the single reducer —
+they consume state, none re-derives it.
+
+- **Menu bar** — the aggregate host state as a status icon, always visible.
+- **Popover** — click the menu bar icon for the full, unlimited list of every
+  configured host, each with its derived state, a distinct per-state label, and
+  the visible age of its data. A **manual refresh** control triggers an immediate
+  read-only poll cycle with the exact same semantics as the scheduled poll
+  (serialized on the poll queue — a manual refresh never double-notifies).
+- **Local notification** — a single macOS notification (with sound) fires on each
+  rising edge into red (non-red → red). Cold start is silent; a red→red label
+  change is silent; K hosts recovering then failing again yield K notifications.
+- **Widget** — a WidgetKit medium widget for the desktop/Notification Center
+  showing the six worst hosts (worst-first, same ranking as every surface) plus an
+  explicit overflow indicator when more than six are configured, and the visible
+  data age. It reads a versioned shared snapshot written by the app; when the app
+  is not running it stays frozen best-effort and the age keeps growing, making
+  staleness legible.
+
+Rendering is native and neutral across all surfaces — no palette or visual
+direction is committed yet (design gated).
 
 ## Read-only SSH client
 
