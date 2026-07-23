@@ -4,13 +4,15 @@ import Foundation
 /// state from its snapshot and the global facts. Surfaces consume this output
 /// and never re-derive it.
 ///
-/// Codomain (Story 2.2): the reducer applies the full strict FR10 precedence
-/// and produces `{.vert, .rougeInjoignable, .stale}`. `.rougeSeuil` is **never**
-/// produced here — the "client metric threshold ⇒ rougeSeuil" tier (spine item
-/// 4, Q1/Q2) is GATED to Story 2.3; a codomain test enforces its absence across
-/// the whole truth table. The reducer stays **pure**: `(snapshot, now,
-/// tailscaleLocalUp, threshold) ⇒ state`, with no side effect and no memory —
-/// no "previous state" field and no notification (AD-13, Story 2.4).
+/// Codomain (Story 2.3): the reducer applies the full strict FR10 precedence
+/// and produces the **complete closed enum** `{.vert, .rougeSeuil,
+/// .rougeInjoignable, .stale}`. `.rougeSeuil` is the tier-4 outcome (spine item
+/// 4, Q1/Q2, ratified 2026-07-23): fresh data with no active failure that
+/// breaches at least one client-side threshold. The reducer stays **pure**:
+/// `(snapshot, now, tailscaleLocalUp, stalenessThreshold, thresholds) ⇒ state`,
+/// with no side effect and no memory — no "previous state" field and no
+/// notification (AD-13, Story 2.4). Thresholds are injected named constants
+/// (`SeuilConfig`), never literals — the reducer reads facts and constants only.
 public enum StateReducer {
 
     /// Staleness threshold — the single isolated parameter for the freshness
@@ -24,7 +26,8 @@ public enum StateReducer {
 
     /// Pure reduction under the strict FR10 precedence: `HostSnapshot` (Story
     /// 1.3) + injected client clock `now` + the global `tailscaleLocalUp` fact
-    /// (Story 2.1) + staleness threshold ⇒ `{.vert, .rougeInjoignable, .stale}`.
+    /// (Story 2.1) + staleness threshold + injected `thresholds` ⇒ `{.vert,
+    /// .rougeSeuil, .rougeInjoignable, .stale}`.
     ///
     /// The ORDER of the guards **is** the precedence — do not reorder. Each rule
     /// short-circuits before the next is evaluated (FR10):
@@ -34,19 +37,26 @@ public enum StateReducer {
     ///      any age evaluation (FR10.2).
     ///   3. else no/stale valid data ⇒ `.stale` (FR10.3), preserving the
     ///      clock-skew fail-closed guard (Story 1.4 #1).
-    ///   4. else fresh ⇒ `.vert`.
+    ///   4. else fresh: at least one client-computed threshold breached ⇒
+    ///      `.rougeSeuil` (Story 2.3, Q2); otherwise `.vert`.
+    ///
+    /// `.rougeSeuil` sits UNDER `.rougeInjoignable` by construction: it is only
+    /// reachable at tier 4, i.e. AFTER the Tailscale override, the active-failure
+    /// short-circuit and the staleness path (AD-17: injoignable > seuil > stale >
+    /// vert). An unreachable host, or one masked by Tailscale-down, never reaches
+    /// the threshold evaluation.
     ///
     /// `tailscaleLocalUp` is a **required** parameter — no default. A default
     /// (`= true`) would be a fail-open by omission: a caller that forgot the
     /// fact would silently skip rule 1. Every caller must pass it explicitly.
-    ///
-    /// `metrics` are opaque and never interpreted (Q1/Q2, Story 2.3): fresh data
-    /// with no active failure always yields `.vert` here — the "metric threshold
-    /// ⇒ `.rougeSeuil`" tier is GATED to 2.3 and NOT produced by this reducer.
+    /// `thresholds` defaults to `.defaults`, so callers from Stories 2.2/2.4/3.1/
+    /// 3.2 are unchanged (Q2 forbids an override system; the parameter is only a
+    /// named injectable seam).
     public static func reduce(_ snapshot: HostSnapshot,
                               now: Date,
                               tailscaleLocalUp: Bool,
-                              stalenessThreshold: TimeInterval = defaultStalenessThreshold) -> HostState {
+                              stalenessThreshold: TimeInterval = defaultStalenessThreshold,
+                              thresholds: SeuilConfig = .defaults) -> HostState {
         // FR10.1 — Tailscale-local override: when the local transport is not
         // available, NO host can be guaranteed reachable, so every host is
         // forced `.stale`/grey and EVERY red is suppressed (including a host
@@ -96,10 +106,62 @@ public enum StateReducer {
         // AFTER 3 minutes", FR5). A truth-table row at age == threshold pins
         // this and fails if `<=` is flipped to `<`.
         if age > stalenessThreshold { return .stale }
-        // FR10 tier 4 — fresh data, no active failure, Tailscale up ⇒ vert. The
-        // "client metric threshold ⇒ .rougeSeuil" tier (spine item 4) is GATED
-        // to Story 2.3 (Q1 metric set, Q2 threshold values): NEVER produced
-        // here.
+        // FR10 tier 4 (Story 2.3) — fresh data, no active failure, Tailscale up.
+        // The client computes each ratio from the raw facts (AD-8) and compares
+        // it to the injected named thresholds. Any single breach ⇒ .rougeSeuil;
+        // otherwise .vert. Missing/non-numeric facts or a zero denominator make a
+        // criterion NON-firing (graceful degradation) — never a false red.
+        if breachesAnyThreshold(snapshot.lastValidFacts?.metrics, thresholds) {
+            return .rougeSeuil
+        }
         return .vert
+    }
+
+    /// Pure tier-4 predicate: does any client-computed ratio breach its named
+    /// threshold? OR of three independent criteria. Graceful degradation is the
+    /// invariant (AD-10): a criterion fires ONLY when BOTH of its facts are
+    /// present AND numeric AND its denominator is > 0 — otherwise it is silently
+    /// skipped (returns no breach), so an old report that omits the new keys, a
+    /// non-numeric value, or a zero denominator can NEVER produce a false
+    /// `.rougeSeuil`. `nil` metrics (never a valid report) short-circuit to no
+    /// breach — though a snapshot in that state never reaches tier 4 anyway.
+    ///
+    /// Severity within a breach (disk ≈ RAM outrank load) is documented (Q2) for
+    /// a future sub-cause label but NOT materialized: this returns a plain Bool
+    /// and the reducer yields the bare `.rougeSeuil` case.
+    private static func breachesAnyThreshold(_ metrics: [String: JSONValue]?,
+                                             _ thresholds: SeuilConfig) -> Bool {
+        guard let metrics else { return false }
+
+        // Disk `/`: 1 − avail/total ≥ diskUsedFraction (used ≥ 90 % by default).
+        if let total = numericFact(metrics, "disk_total_kib"),
+           let avail = numericFact(metrics, "disk_avail_kib"),
+           total > 0,
+           1 - avail / total >= thresholds.diskUsedFraction {
+            return true
+        }
+        // RAM: avail/total ≤ 1 − ramUsedFraction (used ≥ 90 % by default).
+        if let total = numericFact(metrics, "mem_total_kib"),
+           let avail = numericFact(metrics, "mem_available_kib"),
+           total > 0,
+           avail / total <= 1 - thresholds.ramUsedFraction {
+            return true
+        }
+        // Normalized load: loadavg_1m/nproc ≥ loadPerCPU (≥ 2.0 by default).
+        if let load = numericFact(metrics, "loadavg_1m"),
+           let nproc = numericFact(metrics, "nproc"),
+           nproc > 0,
+           load / nproc >= thresholds.loadPerCPU {
+            return true
+        }
+        return false
+    }
+
+    /// A metric fact usable in a ratio: present AND a JSON number. A missing key,
+    /// or a value of any other JSON type, yields `nil` (the criterion is skipped
+    /// — graceful degradation, never a false red).
+    private static func numericFact(_ metrics: [String: JSONValue], _ key: String) -> Double? {
+        if case .number(let value)? = metrics[key] { return value }
+        return nil
     }
 }

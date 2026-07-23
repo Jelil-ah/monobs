@@ -73,6 +73,24 @@ check_metrics_object() {  # $1 = file — non-empty JSON object
     ' < "$1"
 }
 
+# A named metric must be PRESENT and a bare JSON number (Q1 ratification: the
+# client can only compute a ratio from a numeric fact). The raw-text check
+# rejects a quoted value ("123") or boolean the same way check_v_integer does —
+# a decoded Perl scalar would not tell a number from a numeric string apart.
+check_metric_number() {  # $1 = file, $2 = metric key
+    perl -MJSON::PP -0777 -e '
+        my $key = $ARGV[0];
+        my $raw = <STDIN>;
+        my $d = eval { JSON::PP->new->decode($raw) };
+        defined $d or do { print STDERR "not exactly one JSON document\n"; exit 1; };
+        ref $d->{metrics} eq "HASH" or do { print STDERR "metrics is not an object\n"; exit 1; };
+        exists $d->{metrics}{$key} or do { print STDERR "metric $key missing\n"; exit 1; };
+        $raw =~ /"\Q$key\E"\s*:\s*-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?\s*[,}]/
+            or do { print STDERR "metric $key is not a bare JSON number\n"; exit 1; };
+        exit 0;
+    ' "$2" < "$1"
+}
+
 # AD-8 / AC1: no state, threshold, or color term anywhere in the output —
 # keys AND values (the whole document, not just key names). The document is
 # split on every non-letter, so terms hide neither in snake_case keys nor
@@ -121,6 +139,13 @@ check_ts_utc "$out_f" || fail "ts contract violated ($out_f)"
 ok "ts is UTC in the documented format"
 check_metrics_object "$out_f" || fail "metrics contract violated ($out_f)"
 ok "metrics is a non-empty object"
+# Q1 (ratified 2026-07-23): the four new raw keys are PRESENT and numeric. These
+# are the facts the client divides — disk_total/avail, mem_total, nproc — never
+# a ratio (AD-8).
+for key in disk_total_kib disk_avail_kib mem_total_kib nproc; do
+    check_metric_number "$out_f" "$key" || fail "metric $key missing or not a number ($out_f)"
+    ok "metrics.$key is present and a JSON number"
+done
 check_no_state_terms "$out_f" || fail "AD-8 violated: state/threshold/color term in output ($out_f)"
 ok "no state/threshold/color term anywhere in the document (keys and values)"
 
@@ -156,6 +181,17 @@ ok "seeded state identifier in a value fails the AD-8 check"
 printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":{"rouge_seuil":1}}\n' > "$seed"
 check_no_state_terms "$seed" 2> /dev/null && fail "state-term checker missed a state key"
 ok "seeded state identifier in a key fails the AD-8 check"
+
+# The metric-number checker is non-vacuous: a document that OMITS a required key,
+# or emits it as a quoted string, must fail (else a regression that drops or
+# mistypes a Q1 key would pass silently).
+printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":{"disk_avail_kib":1}}\n' > "$seed"
+check_metric_number "$seed" disk_total_kib 2> /dev/null && fail "metric-number checker passed a missing key"
+ok "seeded missing metric key fails the metric-number check"
+
+printf '{"v":1,"ts":"2026-01-01T00:00:00Z","metrics":{"nproc":"4"}}\n' > "$seed"
+check_metric_number "$seed" nproc 2> /dev/null && fail "metric-number checker passed a quoted number"
+ok "seeded quoted numeric metric fails the metric-number check"
 rm -f "$seed"
 
 # --- 4. error convention (implementation convention v1): collection failure
@@ -190,5 +226,49 @@ grep -qF "unexpected value in $TMP_DIR/leading-zero-proc/loadavg" "$err_f" || {
     fail "stderr does not identify the invalid leading-zero source"
 }
 ok "leading-zero rejection identifies the invalid source"
+
+# --- 5. fail-closed for the two NON-/proc sources (df, nproc) via their own
+# test seams (review Mary, Finding 2). /proc is real here; only df/nproc are
+# mocked, so each case exercises the "validate every fact before the single
+# write" convention for a source the MONOBS_REPORT_PROC seam cannot reach.
+# Each mock is invoked by monobs-report as `"$cmd" -P -k /` (df) or `"$cmd"`
+# (nproc); the mocks ignore their arguments.
+mkdir -p "$TMP_DIR/bin" || fail "cannot create mock bin dir"
+
+# df that fails outright (non-zero, no output).
+printf '#!/bin/sh\nexit 3\n' > "$TMP_DIR/bin/df-fail"
+# df that succeeds but reports a non-numeric total (col 2) — a valid POSIX layout
+# with a garbage size field.
+printf '#!/bin/sh\nprintf "%%s\\n" "Filesystem 1024-blocks Used Available Capacity Mounted on"\nprintf "%%s\\n" "/dev/x notanumber 1 2 3%% /"\n' > "$TMP_DIR/bin/df-nonnum"
+# nproc that fails outright.
+printf '#!/bin/sh\nexit 3\n' > "$TMP_DIR/bin/nproc-fail"
+# nproc that succeeds but prints a non-numeric count.
+printf '#!/bin/sh\nprintf "%%s\\n" "many"\n' > "$TMP_DIR/bin/nproc-nonnum"
+chmod +x "$TMP_DIR/bin/df-fail" "$TMP_DIR/bin/df-nonnum" \
+         "$TMP_DIR/bin/nproc-fail" "$TMP_DIR/bin/nproc-nonnum" \
+    || fail "cannot make mock commands executable"
+
+# Runs monobs-report with a mocked df/nproc and asserts the fail-closed contract:
+# non-zero exit, empty stdout (no partial JSON), and a monobs-report: diagnostic
+# whose text matches $3.
+assert_fail_closed() {  # $1 = env assignment, $2 = label, $3 = stderr grep pattern
+    status=0
+    env "$1" "$REPORT" > "$out_f" 2> "$err_f" || status=$?
+    [ "$status" -ne 0 ] || fail "$2: expected non-zero exit, got 0"
+    ok "$2 exits non-zero"
+    [ -s "$out_f" ] && { cat "$out_f" >&2; fail "$2: stdout not empty (partial JSON leaked)"; }
+    ok "$2 leaves stdout empty — no partial JSON"
+    grep -qF "$3" "$err_f" || { cat "$err_f" >&2; fail "$2: stderr does not name the failing source ($3)"; }
+    ok "$2 names the failing source on stderr"
+}
+
+assert_fail_closed "MONOBS_REPORT_DF=$TMP_DIR/bin/df-fail" \
+    "df failure" "cannot read df for /"
+assert_fail_closed "MONOBS_REPORT_DF=$TMP_DIR/bin/df-nonnum" \
+    "df non-numeric total" "unexpected 1024-blocks value from df for /"
+assert_fail_closed "MONOBS_REPORT_NPROC=$TMP_DIR/bin/nproc-fail" \
+    "nproc failure" "cannot read nproc"
+assert_fail_closed "MONOBS_REPORT_NPROC=$TMP_DIR/bin/nproc-nonnum" \
+    "nproc non-numeric" "unexpected value from nproc"
 
 echo "monobs-report-selftest: PASS"

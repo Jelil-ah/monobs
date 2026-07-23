@@ -21,22 +21,37 @@ to `main` and on pull requests).
 The spine ratifies only that `ts` is UTC. v1 serializes it as ISO 8601
 `YYYY-MM-DDTHH:MM:SSZ` (e.g. `2026-01-01T12:00:00Z`).
 
-### `metrics` keys — provisional, pending Q1 ratification
+### `metrics` keys — ratified (Q1, 2026-07-23)
 
-The metric set is an **open question (Q1)**. The keys currently emitted are
-placeholders that only demonstrate the shape of the object; they are not
-ratified and may change without a `v` bump until Q1 is settled:
+The metric set is **ratified** (DECISIONS.md 2026-07-23). Every entry is a **raw
+fact** — never a ratio, percentage, state, threshold or color. The client
+computes all ratios itself (AD-8): disk `1 − disk_avail_kib/disk_total_kib`, RAM
+`mem_available_kib/mem_total_kib`, normalized load `loadavg_1m/nproc`. In
+particular the `df` `Use%` column is **not** emitted.
 
-| Placeholder key     | Fact (read-only source)                  |
-| ------------------- | ---------------------------------------- |
-| `loadavg_1m`        | 1-minute load average (`/proc/loadavg`)  |
-| `uptime_s`          | Uptime in whole seconds (`/proc/uptime`) |
-| `mem_available_kib` | `MemAvailable` (`/proc/meminfo`)         |
+| Key                 | Fact (read-only source)                                     |
+| ------------------- | ----------------------------------------------------------- |
+| `loadavg_1m`        | 1-minute load average (`/proc/loadavg`)                     |
+| `uptime_s`          | Uptime in whole seconds (`/proc/uptime`) — display only, never thresholded |
+| `mem_available_kib` | `MemAvailable` (`/proc/meminfo`)                            |
+| `mem_total_kib`     | `MemTotal` (`/proc/meminfo`)                                |
+| `disk_total_kib`    | Root `/` filesystem size, 1024-blocks column of `df -P -k /` |
+| `disk_avail_kib`    | Root `/` filesystem available space, Available column of `df -P -k /` |
+| `nproc`             | Online CPU count (`nproc`)                                   |
+
+**`v` stays 1 (additive, backward-compatible).** AD-10 versions the **envelope**
+(`{v, ts, metrics}` and its parsing), not the metric set. Adding optional keys
+to `metrics` breaks nothing in either direction: an older client ignores keys it
+does not know, and a client that expects these keys **must tolerate a report that
+omits them** (graceful degradation — an absent/unknown metric is a fact the
+client cannot compute a ratio from, never a breach, never a false red). A `v`
+bump is reserved for an **incompatible** envelope change (a required field
+removed or retyped), which this is not.
 
 ## Example document (fictional values)
 
 ```json
-{"v":1,"ts":"2026-01-01T12:00:00Z","metrics":{"loadavg_1m":0.42,"uptime_s":123456,"mem_available_kib":1048576}}
+{"v":1,"ts":"2026-01-01T12:00:00Z","metrics":{"loadavg_1m":0.42,"uptime_s":123456,"mem_available_kib":1048576,"mem_total_kib":8146944,"disk_total_kib":41251136,"disk_avail_kib":26900000,"nproc":4}}
 ```
 
 ## Error behavior (implementation convention, v1 — not part of the ratified AD-10 contract)
@@ -61,6 +76,7 @@ payload is ever parsed out of a broken report.
 - **Transport (AD-9):** the dedicated SSH key is bound by sshd to the
   forced command `monobs-report` — no pty, no forwarding, no other command.
   See [deploy-forced-command.md](deploy-forced-command.md).
-- **Code (T-RO):** `monobs-report` reads `/proc` and the system clock,
+- **Code (T-RO):** `monobs-report` reads `/proc`, the root filesystem size
+  via `df -P -k /`, the CPU count via `nproc`, and the system clock; it
   writes nothing, opens no network connection, runs no side-effecting
   command.

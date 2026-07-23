@@ -22,6 +22,14 @@ set -u
 # variable.
 PROC="${MONOBS_REPORT_PROC:-/proc}"
 
+# Test seams for the two facts that do NOT come from /proc, so the selftest can
+# exercise their fail-closed path (review Mary, Finding 2) — the same
+# selftest-only contract as MONOBS_REPORT_PROC: still read-only, never set in
+# production (the forced command runs argument-free and sshd's default AcceptEnv
+# does not forward these). Default to the real tools.
+DF="${MONOBS_REPORT_DF:-df}"
+NPROC="${MONOBS_REPORT_NPROC:-nproc}"
+
 fail() { printf 'monobs-report: %s\n' "$1" >&2; exit 1; }
 
 # Facts must serialize as plain JSON numbers; anything else is a
@@ -34,9 +42,11 @@ is_number() {
 }
 
 # --- collect and validate every fact first (read-only) ---
-# The metrics KEYS below are placeholders — provisional, pending Q1
-# ratification. Only the {v, ts, metrics} envelope is ratified (AD-10);
-# the metric set is an open question this executable must not settle.
+# The metric set is ratified (Q1, 2026-07-23, docs/report-contract.md): the
+# seven keys below are raw facts ONLY. The client computes every ratio, state,
+# threshold and color (AD-8) — this executable never emits one. Adding keys to
+# `metrics` is additive/backward-compatible, so `v` stays 1 (the envelope is
+# versioned, not the metric set — AD-10).
 
 [ -r "$PROC/loadavg" ] || fail "cannot read $PROC/loadavg"
 read -r loadavg_1m _ < "$PROC/loadavg" || fail "cannot read $PROC/loadavg"
@@ -52,6 +62,29 @@ mem_available_kib="$(awk '/^MemAvailable:/ { print $2; exit }' "$PROC/meminfo")"
     || fail "cannot read $PROC/meminfo"
 is_number "$mem_available_kib" || fail "MemAvailable not found in $PROC/meminfo"
 
+# MemTotal — same awk motif as MemAvailable. The client divides
+# available/total for the RAM ratio; the server never does (AD-8).
+mem_total_kib="$(awk '/^MemTotal:/ { print $2; exit }' "$PROC/meminfo")" \
+    || fail "cannot read $PROC/meminfo"
+is_number "$mem_total_kib" || fail "MemTotal not found in $PROC/meminfo"
+
+# Root filesystem size and available space, in KiB, from `df -P -k /`:
+#   -P  POSIX one-physical-line-per-filesystem format (stable columns)
+#   -k  1-KiB blocks
+# We parse ONLY the total (1024-blocks, column 2) and Available (column 4). The
+# Use% column (5) is DELIBERATELY dropped — AD-8: the server emits raw facts, the
+# client computes 1 − avail/total itself; a percentage must never appear here.
+df_out="$("$DF" -P -k / 2> /dev/null)" || fail "cannot read df for /"
+disk_total_kib="$(printf '%s\n' "$df_out" | awk 'NR == 2 { print $2; exit }')"
+disk_avail_kib="$(printf '%s\n' "$df_out" | awk 'NR == 2 { print $4; exit }')"
+is_number "$disk_total_kib" || fail "unexpected 1024-blocks value from df for /"
+is_number "$disk_avail_kib" || fail "unexpected Available value from df for /"
+
+# Online CPU count — the client divides loadavg_1m/nproc for the normalized load
+# ratio; the server never does (AD-8).
+nproc_count="$("$NPROC" 2> /dev/null)" || fail "cannot read nproc"
+is_number "$nproc_count" || fail "unexpected value from nproc"
+
 # ts is informative only (AD-10): freshness is anchored on client-side
 # reception of the last valid report, never on this value.
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || fail "cannot read the system clock"
@@ -61,5 +94,6 @@ case "$ts" in
 esac
 
 # --- single final write: the whole document or nothing ---
-printf '{"v":1,"ts":"%s","metrics":{"loadavg_1m":%s,"uptime_s":%s,"mem_available_kib":%s}}\n' \
-    "$ts" "$loadavg_1m" "$uptime_s" "$mem_available_kib"
+printf '{"v":1,"ts":"%s","metrics":{"loadavg_1m":%s,"uptime_s":%s,"mem_available_kib":%s,"mem_total_kib":%s,"disk_total_kib":%s,"disk_avail_kib":%s,"nproc":%s}}\n' \
+    "$ts" "$loadavg_1m" "$uptime_s" "$mem_available_kib" \
+    "$mem_total_kib" "$disk_total_kib" "$disk_avail_kib" "$nproc_count"
