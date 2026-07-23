@@ -120,11 +120,16 @@ public enum StateReducer {
     /// Pure tier-4 predicate: does any client-computed ratio breach its named
     /// threshold? OR of three independent criteria. Graceful degradation is the
     /// invariant (AD-10): a criterion fires ONLY when BOTH of its facts are
-    /// present AND numeric AND its denominator is > 0 — otherwise it is silently
-    /// skipped (returns no breach), so an old report that omits the new keys, a
-    /// non-numeric value, or a zero denominator can NEVER produce a false
-    /// `.rougeSeuil`. `nil` metrics (never a valid report) short-circuit to no
-    /// breach — though a snapshot in that state never reaches tier 4 anyway.
+    /// present AND numeric AND its denominator is > 0 AND the numerator is inside
+    /// its physical domain — otherwise it is silently skipped (returns no breach),
+    /// so an old report that omits the new keys, a non-numeric value, a zero
+    /// denominator, or an out-of-domain value (e.g. a negative `avail`, which is a
+    /// valid JSON number yet physically impossible) can NEVER produce a false
+    /// `.rougeSeuil`. Without the domain guard a negative `avail` would sail
+    /// through `numericFact` and manufacture a false red: disk `1 − (−1000/1000)
+    /// = 2.0 ≥ 0.90`, RAM `−0.05 ≤ 0.10`. `nil` metrics (never a valid report)
+    /// short-circuit to no breach — though a snapshot in that state never reaches
+    /// tier 4 anyway.
     ///
     /// Severity within a breach (disk ≈ RAM outrank load) is documented (Q2) for
     /// a future sub-cause label but NOT materialized: this returns a plain Bool
@@ -134,23 +139,33 @@ public enum StateReducer {
         guard let metrics else { return false }
 
         // Disk `/`: 1 − avail/total ≥ diskUsedFraction (used ≥ 90 % by default).
+        // Domain: 0 ≤ avail ≤ total (an available space that is negative or
+        // exceeds the total is impossible ⇒ skip, never a false red).
         if let total = numericFact(metrics, "disk_total_kib"),
            let avail = numericFact(metrics, "disk_avail_kib"),
            total > 0,
+           avail >= 0, avail <= total,
            1 - avail / total >= thresholds.diskUsedFraction {
             return true
         }
         // RAM: avail/total ≤ 1 − ramUsedFraction (used ≥ 90 % by default).
+        // Domain: avail ≥ 0 (a negative available would make the ratio negative
+        // and cross the `≤` threshold ⇒ false red; an avail > total only lifts the
+        // ratio above 1 and never breaches, so the lower bound is the fix).
         if let total = numericFact(metrics, "mem_total_kib"),
            let avail = numericFact(metrics, "mem_available_kib"),
            total > 0,
+           avail >= 0,
            avail / total <= 1 - thresholds.ramUsedFraction {
             return true
         }
         // Normalized load: loadavg_1m/nproc ≥ loadPerCPU (≥ 2.0 by default).
+        // Domain: load ≥ 0 (a negative load can never breach the `≥` threshold, so
+        // this only rejects impossible input for coherence — no behavior change).
         if let load = numericFact(metrics, "loadavg_1m"),
            let nproc = numericFact(metrics, "nproc"),
            nproc > 0,
+           load >= 0,
            load / nproc >= thresholds.loadPerCPU {
             return true
         }

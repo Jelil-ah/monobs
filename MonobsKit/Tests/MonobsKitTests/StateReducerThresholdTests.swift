@@ -193,6 +193,31 @@ final class StateReducerThresholdTests: XCTestCase {
         XCTAssertEqual(reduce(snap), .vert)
     }
 
+    // DEVRAIT-1: a NEGATIVE disk `avail` is a valid JSON number yet physically
+    // out of domain. Without the `avail >= 0` guard it would compute
+    // `1 − (−1000/1000) = 2.0 ≥ 0.90` and manufacture a FALSE rougeSeuil. It must
+    // degrade gracefully to vert (criterion skipped), no crash.
+    func testNegativeDiskAvailIsVert() {
+        let snap = freshSnapshot(["disk_avail_kib": .number(-1000), "disk_total_kib": .number(1000)])
+        XCTAssertEqual(reduce(snap), .vert)
+    }
+
+    // DEVRAIT-1: a NEGATIVE RAM `avail` would compute `−50/1000 = −0.05 ≤ 0.10`
+    // and manufacture a FALSE rougeSeuil without the `avail >= 0` guard. Skipped
+    // ⇒ vert.
+    func testNegativeRAMAvailIsVert() {
+        let snap = freshSnapshot(["mem_available_kib": .number(-50), "mem_total_kib": .number(1000)])
+        XCTAssertEqual(reduce(snap), .vert)
+    }
+
+    // DEVRAIT-1 (upper bound): a disk `avail` GREATER than `total` is also out of
+    // domain (`1 − 2000/1000 = −1.0`, no breach on its own, but the value is
+    // impossible) ⇒ criterion skipped ⇒ vert. Pins the `avail <= total` guard.
+    func testDiskAvailAboveTotalIsVert() {
+        let snap = freshSnapshot(["disk_avail_kib": .number(2000), "disk_total_kib": .number(1000)])
+        XCTAssertEqual(reduce(snap), .vert)
+    }
+
     // MARK: - Injection (thresholds: is honored, not a hard-coded 0.90)
 
     // A disk at 50 % used is vert under `.defaults` but rougeSeuil under a config

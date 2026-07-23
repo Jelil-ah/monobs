@@ -240,11 +240,15 @@ printf '#!/bin/sh\nexit 3\n' > "$TMP_DIR/bin/df-fail"
 # df that succeeds but reports a non-numeric total (col 2) — a valid POSIX layout
 # with a garbage size field.
 printf '#!/bin/sh\nprintf "%%s\\n" "Filesystem 1024-blocks Used Available Capacity Mounted on"\nprintf "%%s\\n" "/dev/x notanumber 1 2 3%% /"\n' > "$TMP_DIR/bin/df-nonnum"
+# df that succeeds with a VALID total (col 2) but a non-numeric Available (col 4).
+# Without this mock only the col-2 check is exercised; a regression that breaks
+# ONLY the disk_avail_kib check (col 4) would pass the suite unnoticed.
+printf '#!/bin/sh\nprintf "%%s\\n" "Filesystem 1024-blocks Used Available Capacity Mounted on"\nprintf "%%s\\n" "/dev/x 1000 1 notanumber 3%% /"\n' > "$TMP_DIR/bin/df-nonnum-avail"
 # nproc that fails outright.
 printf '#!/bin/sh\nexit 3\n' > "$TMP_DIR/bin/nproc-fail"
 # nproc that succeeds but prints a non-numeric count.
 printf '#!/bin/sh\nprintf "%%s\\n" "many"\n' > "$TMP_DIR/bin/nproc-nonnum"
-chmod +x "$TMP_DIR/bin/df-fail" "$TMP_DIR/bin/df-nonnum" \
+chmod +x "$TMP_DIR/bin/df-fail" "$TMP_DIR/bin/df-nonnum" "$TMP_DIR/bin/df-nonnum-avail" \
          "$TMP_DIR/bin/nproc-fail" "$TMP_DIR/bin/nproc-nonnum" \
     || fail "cannot make mock commands executable"
 
@@ -266,6 +270,8 @@ assert_fail_closed "MONOBS_REPORT_DF=$TMP_DIR/bin/df-fail" \
     "df failure" "cannot read df for /"
 assert_fail_closed "MONOBS_REPORT_DF=$TMP_DIR/bin/df-nonnum" \
     "df non-numeric total" "unexpected 1024-blocks value from df for /"
+assert_fail_closed "MONOBS_REPORT_DF=$TMP_DIR/bin/df-nonnum-avail" \
+    "df non-numeric Available" "unexpected Available value from df for /"
 assert_fail_closed "MONOBS_REPORT_NPROC=$TMP_DIR/bin/nproc-fail" \
     "nproc failure" "cannot read nproc"
 assert_fail_closed "MONOBS_REPORT_NPROC=$TMP_DIR/bin/nproc-nonnum" \
