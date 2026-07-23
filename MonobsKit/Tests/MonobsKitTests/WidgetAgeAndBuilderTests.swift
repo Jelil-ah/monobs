@@ -17,8 +17,9 @@ final class WidgetAgeAndBuilderTests: XCTestCase {
     // duration could not do — proof the contract must carry the instant.
     func testAgeGrowsAsNowAdvancesAgainstFixedTimestamp() {
         let freshness = t0                      // fixed instant, app "stopped"
+        let base = t0                           // local copy so the closure captures a value, not `self`
         let ageAt = { (offset: TimeInterval) in
-            WidgetAge.age(freshnessTimestamp: freshness, now: t0.addingTimeInterval(offset))
+            WidgetAge.age(freshnessTimestamp: freshness, now: base.addingTimeInterval(offset))
         }
         XCTAssertEqual(ageAt(0), 0)
         XCTAssertEqual(ageAt(30), 30)
