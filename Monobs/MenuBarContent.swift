@@ -55,36 +55,3 @@ enum MenuBarPresentation {
         return "il y a \(Int(age.rounded())) s"
     }
 }
-
-/// Thin SwiftUI surface (AD-11): it consumes the projection and renders it —
-/// it computes nothing. No manual refresh, no manual poll, no widget.
-struct MenuBarContent: View {
-    @ObservedObject var model: MenuBarModel
-
-    var body: some View {
-        let projection = model.projection
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Monobs — \(MenuBarPresentation.aggregateLabel(projection.aggregate))")
-                .font(.headline)
-            Divider()
-            if projection.hosts.isEmpty {
-                Text("aucun hôte configuré").foregroundStyle(.secondary)
-            } else {
-                ForEach(projection.hosts, id: \.hostID) { host in
-                    HStack(spacing: 8) {
-                        Image(systemName: MenuBarPresentation.symbol(for: host.state))
-                        Text(host.hostID)
-                        Spacer(minLength: 12)
-                        Text(MenuBarPresentation.label(for: host.state))
-                        Text(MenuBarPresentation.ageText(host.age)).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Divider()
-            Text("Cadence \(Int(HostPollingLoop.defaultCadence)) s")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-        .padding(8)
-        .frame(minWidth: 260, alignment: .leading)
-    }
-}

@@ -39,6 +39,14 @@ public final class HostPollingLoop: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false
     private var generation: UInt64 = 0
+    /// Story 3.1 / D-1: `true` while a cycle (planned or manual) is executing on
+    /// the serial queue. A refresh arriving while this is `true` is deferred to a
+    /// trailing cycle rather than run reentrantly.
+    private var cycleExecuting = false
+    /// Story 3.1 / D-1: a manual refresh is owed. Coalesces multiple refresh
+    /// requests into a single immediate cycle — set true on request, cleared when
+    /// the servicing cycle STARTS. Never dropped silently (F-W3 trailing).
+    private var immediateCyclePending = false
 
     public convenience init(
         hosts: [ObservedHost],
@@ -103,6 +111,69 @@ public final class HostPollingLoop: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Story 3.1 (AD-16) — manual refresh. Closes DEBT.md#D-1: it NEVER calls
+    /// `runOneCycle()`/`processCycle` directly from the caller (UI) thread. It
+    /// ENQUEUES an immediate cycle on the SAME serial internal queue that cadences
+    /// the scheduled poller, so a manual refresh and a scheduled cycle are fully
+    /// ORDERED — never two `processCycle` in flight, so no double-emission and no
+    /// stale write-back can overwrite a fresher red cycle. The `NSLock` in
+    /// `NotificationCoordinator` gives mutual exclusion but NOT ordering; this
+    /// serialization is what actually makes AD-16 safe.
+    ///
+    /// Coalescing (F-W3): if a cycle is already in flight, the refresh is absorbed
+    /// into a single TRAILING cycle guaranteed to run AFTER the current one —
+    /// multiple requests collapse to one, and none is ever dropped silently (the
+    /// operator always gets a fresh poll following their click, AD-16).
+    public func requestImmediateCycle() {
+        lock.lock()
+        if cycleExecuting {
+            // A cycle is running on the serial queue: owe a trailing cycle. Reruns
+            // of this branch coalesce (the flag is already set).
+            immediateCyclePending = true
+            lock.unlock()
+            return
+        }
+        if immediateCyclePending {
+            // An immediate cycle is already enqueued and waiting on the serial
+            // queue — coalesce rather than stack a redundant one.
+            lock.unlock()
+            return
+        }
+        immediateCyclePending = true
+        lock.unlock()
+        enqueueImmediateCycle()
+    }
+
+    /// Posts one immediate cycle on the internal serial queue (via the same
+    /// `scheduler` seam as the planned cadence), so it is ordered behind any cycle
+    /// currently in flight.
+    private func enqueueImmediateCycle() {
+        scheduler.schedule(at: scheduler.nowNanoseconds()) { [weak self] in
+            self?.performCycle()
+        }
+    }
+
+    /// The single funnel through which every cycle (planned or manual) runs, so
+    /// `cycleExecuting` is authoritative and a refresh mid-cycle is always
+    /// deferred to a trailing cycle rather than reentered.
+    private func performCycle() {
+        lock.lock()
+        // Any request outstanding at the moment this cycle STARTS is serviced by
+        // this cycle (it happens-after the request). Requests arriving during
+        // execution set the flag again ⇒ a trailing cycle.
+        immediateCyclePending = false
+        cycleExecuting = true
+        lock.unlock()
+
+        runOneCycle()
+
+        lock.lock()
+        cycleExecuting = false
+        let owed = immediateCyclePending
+        lock.unlock()
+        if owed { enqueueImmediateCycle() }
+    }
+
     /// Synchronous cycle seam used by focused tests and future manual refresh.
     public func runOneCycle() {
         for host in hosts {
@@ -131,7 +202,10 @@ public final class HostPollingLoop: @unchecked Sendable {
             let nextUptime = deadline
                 &+ intervalsToNext &* cadenceNanoseconds
             self.scheduleCycle(at: nextUptime, generation: generation)
-            self.runOneCycle()
+            // Route through the shared funnel so `cycleExecuting` is authoritative
+            // and a manual refresh arriving mid-cycle is deferred (D-1), never
+            // reentered. No refresh outstanding ⇒ behaviour identical to before.
+            self.performCycle()
         }
     }
 

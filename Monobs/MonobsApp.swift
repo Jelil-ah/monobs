@@ -108,6 +108,15 @@ private final class MonobsRuntime {
         pollingLoop.start()
     }
 
+    /// Story 3.1 (AD-16) — the popover's manual refresh entry point. It routes to
+    /// `HostPollingLoop.requestImmediateCycle()`, which ENQUEUES an immediate cycle
+    /// on the SAME serial poll-queue as the scheduled poller (DEBT.md#D-1 closed
+    /// there). The UI never calls `runOneCycle`/`processCycle` directly, so a
+    /// manual refresh can never run concurrently with a scheduled cycle.
+    func requestRefresh() {
+        pollingLoop.requestImmediateCycle()
+    }
+
     deinit {
         pollingLoop.stop()
     }
@@ -131,15 +140,17 @@ struct MonobsApp: App {
     }
 
     var body: some Scene {
-        // The menu bar now reflects the real aggregate state (Story 1.4). The
-        // icon comes from the aggregate; the dropdown lists each host with its
-        // derived state and data age (FR5). Rendering is native and neutral
-        // (Q3 gated — no palette, no visual direction). LSUIElement=YES keeps
-        // the app out of the Dock.
+        // The menu bar icon reflects the real aggregate state (Story 1.4). Story
+        // 3.1 attaches the POPOVER surface as the window-style content: a dense,
+        // unlimited (CA-7), AD-17-ordered list of all hosts with a manual refresh
+        // (AD-16). Both surfaces project the SAME snapshot (AD-12). Rendering is
+        // native and neutral (Q3 gated — no palette, no visual direction).
+        // LSUIElement=YES keeps the app out of the Dock.
         MenuBarExtra {
-            MenuBarContent(model: model)
+            PopoverContent(model: model, onRefresh: { [runtime] in runtime.requestRefresh() })
         } label: {
             Image(systemName: MenuBarPresentation.aggregateSymbol(model.projection.aggregate))
         }
+        .menuBarExtraStyle(.window)
     }
 }
