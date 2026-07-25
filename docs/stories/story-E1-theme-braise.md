@@ -10,11 +10,13 @@ Cette story porte le THÈME (couleurs, verre, typo, halos) — PAS l'icône ni l
 (stories E2/E3 séparées). Le Q3 gate est LEVÉ pour cette story : on applique bien la direction D2.
 
 ## Autorité de design (à LIRE avant de coder — source de vérité)
-- `/home/hermes/work/forge/monobs/craft-d2/tokens.css` — TOUS les tokens (OKLCH, nommés par rôle).
+Les planches de design vivent hors du repo, dans l'espace de travail design
+(`<design-workspace>/monobs/`) — elles ne sont pas versionnées ici.
+- `craft-d2/tokens.css` — TOUS les tokens (OKLCH, nommés par rôle).
   C'est la référence de portage : chaque valeur SwiftUI vient de là.
-- `/home/hermes/work/forge/monobs/craft-d2/index.html` — composition popover + widget de référence.
-- `/home/hermes/work/forge/monobs/craft-d2/states.html` — états limites (dots, halos, counts, rows).
-- `/home/hermes/work/forge/monobs/ETAT-REPRISE.md` — le cadrage global.
+- `craft-d2/index.html` — composition popover + widget de référence.
+- `craft-d2/states.html` — états limites (dots, halos, counts, rows).
+- `ETAT-REPRISE.md` — le cadrage global.
 
 ## Périmètre — fichiers À MODIFIER (app uniquement)
 - `Monobs/PopoverContent.swift` — surface popover.

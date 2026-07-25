@@ -25,3 +25,8 @@ hosts.toml
 t-priv-denylist*
 .t-priv-selftest.tmp/
 .monobs-report-selftest.tmp/
+
+# Artefacts de process BMAD (prompts, rapports d agents, logs de review).
+# Local-only : contiennent des chemins de la machine de dev et ne doivent
+# jamais atterrir dans un repo public (t-priv les refuserait).
+bmad/

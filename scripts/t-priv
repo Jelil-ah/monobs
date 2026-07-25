@@ -24,8 +24,28 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DENYLIST="${T_PRIV_DENYLIST:-$HOME/.config/monobs/t-priv-denylist}"
 cd "$REPO_ROOT" || exit 2
 
+# Le périmètre est ce que le REPO publie, pas ce qui traîne sur le disque du
+# dev. Un répertoire d'artefacts local-only (jamais tracké, ignoré par git) ne
+# peut pas fuiter, et le signaler produit du bruit que la CI ne voit pas — un
+# garde bruyant finit ignoré. On écarte donc explicitement ces répertoires via
+# T_PRIV_EXCLUDE_DIRS (liste séparée par des ':', chemins relatifs au repo).
+#
+# ATTENTION : ne PAS filtrer sur `git check-ignore` en bloc. Le self-test sème
+# ses violations dans `.t-priv-selftest.tmp/`, qui EST git-ignoré : un filtre
+# global rendrait le garde aveugle à ses propres cas de test (vérifié — le
+# self-test échoue alors sur « seeded cgnat-ipv4 ... expected exit 1, got 0 »).
+_T_PRIV_PRUNE=()
+_t_priv_excludes="${T_PRIV_EXCLUDE_DIRS:-bmad}"
+while IFS= read -r _d; do
+    [ -n "$_d" ] || continue
+    _T_PRIV_PRUNE+=( -path "./$_d" -prune -o )
+done <<EOF
+$(printf '%s\n' "$_t_priv_excludes" | tr ':' '\n')
+EOF
+
 find . \
     -name .git -prune -o \
+    "${_T_PRIV_PRUNE[@]}" \
     -path ./build -type d -prune -o \
     -path ./DerivedData -type d -prune -o \
     \( -type f -o -type l \) -print \
