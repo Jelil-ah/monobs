@@ -45,6 +45,23 @@ public final class SnapshotStore: @unchecked Sendable {
         return snapshots
     }
 
+    /// Drops every snapshot whose host is no longer observed (CAP-10 hot
+    /// reconfiguration). A host removed from `hosts.toml` stops being polled, so
+    /// its last recorded facts would otherwise sit here forever and keep being
+    /// served to any reader that goes through `allSnapshots()` — the widget
+    /// writer and the projection both do. Purging at the source is what makes
+    /// "removed" mean removed rather than "frozen at its last value".
+    ///
+    /// Called by `HostPollingLoop` on its serial poll-queue, between two cycles,
+    /// so it can never race a `record(_:forHost:receivedAt:)` from a cycle driven
+    /// THROUGH that queue (a caller invoking the `runOneCycle()` seam directly
+    /// from another thread is outside that guarantee — the store's own lock still
+    /// keeps it memory-safe). Idempotent; retaining the current set is a no-op.
+    public func retainOnly(hostIDs: Set<String>) {
+        lock.lock(); defer { lock.unlock() }
+        snapshots = snapshots.filter { hostIDs.contains($0.key) }
+    }
+
     /// Applies one poll outcome. `receivedAt` is the client reception instant
     /// injected by the caller (the poller passes its clock's "now") — injected
     /// for deterministic tests.

@@ -7,7 +7,7 @@ import PackageDescription
 
 let package = Package(
     name: "MonobsKit",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "MonobsKit", targets: ["MonobsKit"])
     ],

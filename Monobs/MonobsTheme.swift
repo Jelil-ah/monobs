@@ -79,10 +79,35 @@ enum Theme {
 
     // MARK: - Popover (4 stops translucides, verre chaud)
 
-    static let popStop1 = oklch(0.270, 0.042, 34, 0.50)
-    static let popStop2 = oklch(0.235, 0.032, 33, 0.50)
-    static let popStop3 = oklch(0.198, 0.022, 34, 0.52)
-    static let popStop4 = oklch(0.165, 0.014, 40, 0.56)
+    /// Un stop du dégradé popover, décrit en OKLCH **une seule fois**. Le repli
+    /// opaque d'accessibilité (CAP-6) en DÉRIVE en forçant l'alpha à 1 : même
+    /// lightness, même chroma, même teinte, même position — seule la matière
+    /// tombe. Pas de palette parallèle : une correction ici vaut pour les deux
+    /// rendus, et le repli ne peut pas s'écarter de l'identité Braise.
+    private struct PopStop {
+        let l: Double
+        let c: Double
+        let h: Double
+        let alpha: Double
+        let location: CGFloat
+
+        /// Version verre (translucide), composée par-dessus la vibrancy macOS.
+        var glass: Color { Theme.oklch(l, c, h, alpha) }
+        /// Version prune sombre opaque — aucune matière sous elle.
+        var opaque: Color { Theme.oklch(l, c, h) }
+    }
+
+    private static let popStops: [PopStop] = [
+        PopStop(l: 0.270, c: 0.042, h: 34, alpha: 0.50, location: 0.00),
+        PopStop(l: 0.235, c: 0.032, h: 33, alpha: 0.50, location: 0.42),
+        PopStop(l: 0.198, c: 0.022, h: 34, alpha: 0.52, location: 0.66),
+        PopStop(l: 0.165, c: 0.014, h: 40, alpha: 0.56, location: 1.00),
+    ]
+
+    static var popStop1: Color { popStops[0].glass }
+    static var popStop2: Color { popStops[1].glass }
+    static var popStop3: Color { popStops[2].glass }
+    static var popStop4: Color { popStops[3].glass }
 
     // MARK: - Widget (opaque — WidgetKit ne compose pas de vibrancy fiable)
 
@@ -104,9 +129,25 @@ enum Theme {
     static let hair2       = oklch(0.82, 0.02, 50, 0.18)
     static let borderGlass = oklch(0.95, 0.03, 60, 0.24)
 
-    // Fond/bord du contrôle « Rafraîchir » (cf. `.refresh` dans index.html).
+    // Fond/bord des contrôles secondaires du popover — « Rafraîchir » et
+    // « Quitter » (cf. `.refresh` dans index.html). Registre volontairement mat :
+    // ce ne sont pas des boutons d'accent, l'accent reste aux états.
     static let controlFill   = oklch(0.9, 0.03, 60, 0.08)
     static let controlBorder = oklch(0.9, 0.03, 60, 0.16)
+
+    // MARK: - Variantes « Augmenter le contraste » (CAP-6)
+
+    // Sous ce réglage, la matière ne délimite plus rien : les zones doivent tenir
+    // par le trait. Ces tokens sont DÉRIVÉS de leur homologue standard — même
+    // lightness, même chroma, même teinte, alpha seul renforcé. On ne change pas
+    // la couleur, on la rend visible.
+
+    static let hairContrast          = oklch(0.82, 0.02, 50, 0.34)
+    static let borderGlassContrast   = oklch(0.95, 0.03, 60, 0.62)
+    static let controlBorderContrast = oklch(0.9, 0.03, 60, 0.50)
+    /// Bandeau de pied : assez présent pour se lire comme une zone distincte du
+    /// dégradé, sans devenir une surface concurrente.
+    static let surfaceFooterContrast = oklch(0.14, 0.014, 40, 0.55)
 
     // MARK: - Échelle d'encre (texte, ≥4.5:1 sur tout le dégradé)
 
@@ -152,17 +193,26 @@ enum Theme {
         return (start, end)
     }
 
-    /// Dégradé verre chaud du popover — 4 stops, ~178° (quasi vertical, haut→bas).
-    static var popoverGradient: LinearGradient {
-        let stops: [Gradient.Stop] = [
-            .init(color: popStop1, location: 0.0),
-            .init(color: popStop2, location: 0.42),
-            .init(color: popStop3, location: 0.66),
-            .init(color: popStop4, location: 1.0),
-        ]
+    /// Construit le dégradé du popover depuis la table `popStops` — même
+    /// géométrie (~178°, quasi vertical haut→bas) et mêmes positions dans les
+    /// deux rendus : seule l'alpha des stops diffère.
+    private static func makePopoverGradient(opaque: Bool) -> LinearGradient {
+        let stops = popStops.map {
+            Gradient.Stop(color: opaque ? $0.opaque : $0.glass, location: $0.location)
+        }
         let p = gradientPoints(angleDegrees: 178)
         return LinearGradient(gradient: Gradient(stops: stops), startPoint: p.start, endPoint: p.end)
     }
+
+    /// Dégradé verre chaud du popover — 4 stops, ~178° (quasi vertical, haut→bas).
+    static var popoverGradient: LinearGradient { makePopoverGradient(opaque: false) }
+
+    /// Repli CAP-6 : le MÊME dégradé Braise, alpha 1, prune sombre plein. Servi
+    /// quand « Réduire la transparence » ou « Augmenter le contraste » est actif —
+    /// la matière disparaît, l'identité reste. Ce n'est jamais le fond système.
+    /// Fond plus sombre qu'en verre ⇒ le contraste de l'échelle d'encre (claire)
+    /// monte, il ne baisse jamais.
+    static var popoverOpaqueGradient: LinearGradient { makePopoverGradient(opaque: true) }
 
     // MARK: - Rayons
 

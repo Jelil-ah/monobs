@@ -13,8 +13,31 @@ metric over a limit) is not shipped: the app produces `vert`, `rouge-injoignable
 
 ## Requirements
 
-- macOS 13 or later (runtime)
+- macOS 14 or later (runtime)
 - Xcode 16 or later (build — the project uses the Xcode 16+ project format)
+
+## Install
+
+For end users. You do not need Xcode or a terminal to install Monobs.
+
+1. **Download** `Monobs.zip` from the [GitHub releases page](https://github.com/Jelil-ah/monobs/releases).
+2. **Unzip it** — double-click `Monobs.zip` in your Downloads folder. You get `Monobs.app`.
+3. **Copy `Monobs.app` into your `/Applications` folder _before_ you open it.** Do not open it straight from Downloads. If you launch the app from the folder it was downloaded into, macOS runs it from a temporary, read-only quarantine location (called App Translocation) instead of from where you see it — which causes erratic behavior and makes the app hard to find or update. Copying it to `/Applications` first avoids all of this.
+4. **First launch: right-click (or Control-click) `Monobs.app` in `/Applications` and choose _Open_,** then click _Open_ again in the dialog that appears. Monobs is not signed with a paid Apple Developer account, so the very first launch has to be done this way — a plain double-click is blocked on the first run. Once you have opened it this way a single time, it opens normally afterwards.
+5. **(Optional) Verify the download.** Each release publishes a SHA-256 checksum of `Monobs.zip` in its release notes. If you want to confirm the file is intact, open Terminal, run `shasum -a 256 Monobs.zip`, and compare the value with the one in the release notes. This step is optional and is not needed to use the app.
+
+Monobs runs as a menu bar agent (no Dock icon). After the first launch, look for the Monobs glyph in the menu bar.
+
+## Uninstall
+
+Monobs installs no background service and no login item, so removing it is entirely manual. There is no uninstall script — the steps below are all that is needed.
+
+1. **Quit the app** — click the Monobs glyph in the menu bar and choose _Quit_.
+2. **Remove the app** — drag `Monobs.app` from `/Applications` to the Trash.
+3. **Check for stray copies** — make sure no other `Monobs.app` is still sitting in your Downloads folder or on your Desktop, and delete any you find. Leftover copies are a common source of confusion (an old copy can keep running from the wrong place).
+4. **Remove the files the app wrote** (optional, for a full cleanup). These are the only two locations Monobs ever writes to:
+   - `~/.config/monobs/hosts.toml` — your host configuration.
+   - `~/Library/Application Support/Monobs/state.json` — the app's saved state (the snapshot the widget reads). You can delete the whole `~/Library/Application Support/Monobs/` folder.
 
 ## Build
 
@@ -25,7 +48,7 @@ xcodebuild -project Monobs.xcodeproj -scheme Monobs -configuration Debug -derive
 open build/Build/Products/Debug/Monobs.app
 ```
 
-The app is a menu bar agent (no Dock icon): look for the dashed-circle icon in the menu bar.
+The app is a menu bar agent (no Dock icon): look for the Monobs glyph in the menu bar.
 
 ## Surfaces
 

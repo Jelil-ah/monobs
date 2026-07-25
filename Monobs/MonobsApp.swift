@@ -3,6 +3,7 @@
 //  Monobs
 //
 
+import AppKit
 import Foundation
 import Combine
 import SwiftUI
@@ -18,12 +19,33 @@ final class MenuBarModel: ObservableObject {
     }
 }
 
+/// CAP-10 — référence FAIBLE et différée vers la boucle de polling, pour que le
+/// hook de fin de cycle projette la liste d'hôtes RÉELLEMENT observée par le
+/// cycle qui vient de finir, et non celle figée à la construction.
+///
+/// Pourquoi ce détour : le hook `onCycleComplete` est passé au constructeur de
+/// `HostPollingLoop`, donc il ne peut pas capturer la boucle qu'il sert. Depuis
+/// T9 la liste est mutable ; capturer `config.hosts` gèlerait la projection sur
+/// la configuration du démarrage, et un hôte ajouté depuis les réglages
+/// n'apparaîtrait jamais dans le popover — l'app polerait le bon hôte en
+/// affichant l'ancienne liste.
+///
+/// La référence est faible : la boucle retient le hook, le hook retiendrait
+/// autrement la boucle (cycle de rétention, `deinit` jamais appelé, `stop()`
+/// jamais joué).
+private final class PollingLoopReference: @unchecked Sendable {
+    weak var loop: HostPollingLoop?
+}
+
 private final class MonobsRuntime {
     let model = MenuBarModel()
 
-    private let hosts: [ObservedHost]
     private let snapshotStore: SnapshotStore
     private let pollingLoop: HostPollingLoop
+    /// CAP-10 — la fenêtre de réglages, créée à la première ouverture et
+    /// conservée ensuite : ré-ouvrir ne repart pas d'un modèle neuf, mais relit
+    /// le disque (cf. `SettingsWindowController.present()`).
+    private var settingsWindow: SettingsWindowController?
     // Story 2.1: the global Tailscale-local availability fact (AD-14), produced
     // beside the per-host snapshots. The detector re-probes each read; the store
     // holds the latest value, refreshed once per poll cycle. NOTHING consumes it
@@ -41,11 +63,20 @@ private final class MonobsRuntime {
 
     init() {
         let config = HostConfigLoader.load()
-        hosts = config.hosts
         let store = SnapshotStore()
         snapshotStore = store
         let model = self.model
-        let hosts = self.hosts
+        // CAP-10 : la liste observée n'est plus figée. Elle est relue à chaque
+        // fin de cycle depuis la boucle elle-même — donc exactement la liste que
+        // ce cycle a visitée (la reconfiguration T9 ne peut jamais atterrir au
+        // milieu d'un cycle : elle est sérialisée sur la même file). Le repli sur
+        // `bootHosts` ne sert qu'à la fenêtre entre la construction du hook et
+        // l'affectation de la référence, avant tout premier cycle.
+        let loopReference = PollingLoopReference()
+        let bootHosts = config.hosts
+        let currentHosts: @Sendable () -> [ObservedHost] = {
+            loopReference.loop?.observedHosts ?? bootHosts
+        }
         let tailscaleDetector = self.tailscaleDetector
         let tailscaleFact = self.tailscaleFact
         let coordinator = self.coordinator
@@ -72,7 +103,7 @@ private final class MonobsRuntime {
                 // Read the snapshots ONCE so the projection and the shared-container
                 // writer (Story 3.2) observe exactly the same cycle.
                 let snapshots = store.allSnapshots()
-                let projection = MenuBarProjector.project(hosts: hosts,
+                let projection = MenuBarProjector.project(hosts: currentHosts(),
                                                           snapshots: snapshots,
                                                           now: Date(),
                                                           tailscaleLocalUp: tailscaleFact.current)
@@ -99,6 +130,10 @@ private final class MonobsRuntime {
                 DispatchQueue.main.async { model.projection = projection }
             }
         )
+        // Publie la boucle AVANT tout cycle : `start()` (plus bas) est le premier
+        // à en enqueuer un, donc le hook ne peut pas s'exécuter sur la référence
+        // encore vide.
+        loopReference.loop = pollingLoop
         config.diagnostics.forEach(Self.log)
         // Prime the global Tailscale fact BEFORE the initial projection so the
         // cold-start view is honest: the fact starts `false` (fail-closed), and
@@ -111,7 +146,7 @@ private final class MonobsRuntime {
         // view (no data yet), never a premature vert. Passes the primed
         // `tailscaleFact.current` — fail-closed at startup.
         let initialSnapshots = store.allSnapshots()
-        model.projection = MenuBarProjector.project(hosts: hosts,
+        model.projection = MenuBarProjector.project(hosts: config.hosts,
                                                     snapshots: initialSnapshots,
                                                     now: Date(),
                                                     tailscaleLocalUp: tailscaleFact.current)
@@ -130,6 +165,39 @@ private final class MonobsRuntime {
         pollingLoop.requestImmediateCycle()
     }
 
+    /// CAP-10 — ouvre (ou ramène au premier plan) la fenêtre de réglages. Point
+    /// d'entrée unique du popover, y compris depuis l'état vide du premier
+    /// lancement.
+    func openSettings() {
+        let controller = settingsWindow ?? SettingsWindowController(
+            apply: { [weak self] hosts in self?.applyConfiguredHosts(hosts) })
+        settingsWindow = controller
+        controller.present()
+    }
+
+    /// CAP-10 — le pont réglages → runtime, et la seule chose que l'écran de
+    /// réglages sait faire au moteur.
+    ///
+    /// `reconfigure` (T9) ENQUEUE le remplacement sur la file sérielle du
+    /// poller : la nouvelle liste prend effet entre deux cycles, jamais au
+    /// milieu de l'un d'eux. `requestImmediateCycle` (Story 3.1) enchaîne sur la
+    /// MÊME file, donc strictement après le remplacement — c'est ce qui rend le
+    /// résultat visible tout de suite au lieu d'attendre la cadence.
+    ///
+    /// Aucun appel si rien n'a changé : `reconfigure` répond `false` sur une
+    /// liste identique, et on ne déclenche alors aucun cycle — enregistrer sans
+    /// modification ne doit pas repoller la flotte.
+    ///
+    /// Cas du tout premier hôte : la boucle a démarré à vide (`start()` a
+    /// renvoyé `false`), et c'est `reconfigure` qui rallume la cadence — d'où
+    /// « la surveillance démarre sans relancer l'app ». Le cycle immédiat
+    /// demandé ici est alors ignoré par la garde de génération, la cadence
+    /// venant d'être activée avec son propre cycle initial.
+    private func applyConfiguredHosts(_ hosts: [ObservedHost]) {
+        guard pollingLoop.reconfigure(hosts: hosts) else { return }
+        pollingLoop.requestImmediateCycle()
+    }
+
     deinit {
         pollingLoop.stop()
     }
@@ -137,6 +205,56 @@ private final class MonobsRuntime {
     private static func log(_ message: String) {
         guard let data = "Monobs: \(message)\n".data(using: .utf8) else { return }
         try? FileHandle.standardError.write(contentsOf: data)
+    }
+}
+
+/// CAP-10 — la fenêtre de réglages, en AppKit assumé.
+///
+/// Monobs est `LSUIElement` : pas de Dock, pas de menu applicatif, donc pas de
+/// commande « Réglages… » système sur laquelle s'appuyer. La scène SwiftUI
+/// `Settings` dépend précisément de ce menu pour être ouverte ; ici elle serait
+/// inatteignable. Une `NSWindow` explicite rend l'ouverture déterministe depuis
+/// le popover — le seul endroit d'où l'utilisateur peut cliquer.
+private final class SettingsWindowController {
+    private let model: SettingsModel
+    private var window: NSWindow?
+
+    init(apply: @escaping ([ObservedHost]) -> Void) {
+        model = SettingsModel(apply: apply)
+    }
+
+    func present() {
+        let window = self.window ?? makeWindow()
+        // Relecture du disque à chaque ouverture — mais JAMAIS sur une fenêtre
+        // déjà ouverte : ce serait effacer une saisie en cours parce que
+        // l'utilisateur a recliqué sur « Réglages ».
+        if !window.isVisible { model.reload() }
+        // `LSUIElement` : sans activation explicite, la fenêtre s'ouvre derrière
+        // l'application au premier plan. `activate()` (macOS 14) remplace
+        // `activate(ignoringOtherApps:)`, déprécié depuis ce même plancher.
+        NSApplication.shared.activate()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 460),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.title = "Réglages Monobs"
+        // La fenêtre survit à sa fermeture : la rouvrir réutilise le même
+        // contrôleur (et relit le disque) au lieu de désallouer sous SwiftUI.
+        window.isReleasedWhenClosed = false
+        // Le thème Braise est sombre : les contrôles natifs (champs de texte)
+        // doivent l'être aussi, sinon ils arrivent en clair sur fond prune.
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = NSHostingView(
+            rootView: SettingsContent(model: model,
+                                      onClose: { [weak window] in window?.performClose(nil) }))
+        window.center()
+        self.window = window
+        return window
     }
 }
 
@@ -160,7 +278,9 @@ struct MonobsApp: App {
         // native and neutral (Q3 gated — no palette, no visual direction).
         // LSUIElement=YES keeps the app out of the Dock.
         MenuBarExtra {
-            PopoverContent(model: model, onRefresh: { [runtime] in runtime.requestRefresh() })
+            PopoverContent(model: model,
+                           onRefresh: { [runtime] in runtime.requestRefresh() },
+                           onOpenSettings: { [runtime] in runtime.openSettings() })
         } label: {
             // Story E1 — teinte d'agrégat (D2). Le glyphe reste INVARIANT (symbole
             // choisi par `MenuBarPresentation`) ; seule la teinte change. Nominal /
