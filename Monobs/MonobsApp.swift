@@ -162,8 +162,23 @@ struct MonobsApp: App {
         MenuBarExtra {
             PopoverContent(model: model, onRefresh: { [runtime] in runtime.requestRefresh() })
         } label: {
+            // Story E1 — teinte d'agrégat (D2). Le glyphe reste INVARIANT (symbole
+            // choisi par `MenuBarPresentation`) ; seule la teinte change. Nominal /
+            // stale / vide = template neutre (le système gère la couleur de barre,
+            // « boring is good »). Incident = teinté rouge — un signal, pas du
+            // décor. Aligné à la règle D2 : le rouge, rare, surcrie ; le vert recule.
             Image(systemName: MenuBarPresentation.aggregateSymbol(model.projection.aggregate))
+                .foregroundStyle(menuBarTint(for: model.projection.aggregate))
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// Teinte du glyphe de barre selon l'agrégat : rouge pour l'incident, neutre
+    /// (template système) sinon. `nil` (aucun hôte) reste neutre.
+    private func menuBarTint(for aggregate: HostState?) -> Color {
+        if let aggregate, MenuBarPresentation.isIncident(aggregate) {
+            return Theme.redText
+        }
+        return .primary
     }
 }

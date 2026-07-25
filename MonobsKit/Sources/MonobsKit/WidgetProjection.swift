@@ -107,23 +107,23 @@ public enum WidgetPresentation {
         }
     }
 
-    /// Age text (FR5). `nil` ⇒ "jamais", never "0 s" for a never-received host.
+    /// Age text (FR5). `nil` ⇒ "jamais", never "0s" for a never-received host.
+    /// Delegates to the shared `AgeFormatting.tiered` (own file — cross-surface
+    /// helper) so widget and popover share one tier source. `age` is guaranteed
+    /// non-negative (`WidgetAge.age` fails closed to `nil` on a future
+    /// timestamp), so no negative branch is needed.
     ///
-    /// Manual, deterministic tiers (s → min → h → j): the widget of WORST hosts
-    /// shows large ages as the norm, so raw seconds ("il y a 7200 s") violate the
-    /// legible-age requirement (D-3). Not `RelativeDateTimeFormatter` — that is
-    /// locale-dependent and non-deterministic, which would break the unit tests.
-    /// `age` is guaranteed non-negative (`WidgetAge.age` fails closed to `nil` on
-    /// a future timestamp), so no negative branch is needed here.
+    /// The `TimeInterval → Int` narrowing rounds UP too (`.up`), not to nearest:
+    /// real ages come from `Date.timeIntervalSince` and are therefore FRACTIONAL
+    /// by nature, so a nearest-rounding here would silently cancel the tiers'
+    /// ceil (60.1 s → 60 → "1min" while a minute and a tenth has elapsed). Ceil
+    /// end to end — `TimeInterval` → `Int` → tier — is what makes the guarantee
+    /// "never presented as fresher than reality" hold for fractional ages too.
+    /// Consequence, and it is the intended one: a strictly positive sub-second
+    /// age reads "1s" (0.3 s → "1s"), never "0s"; only an EXACT `0.0` stays "0s".
     public static func ageText(_ age: TimeInterval?) -> String {
         guard let age else { return "jamais" }
-        let seconds = Int(age.rounded())
-        if seconds < 60 { return "il y a \(seconds)s" }
-        let minutes = seconds / 60
-        if minutes < 60 { return "il y a \(minutes)min" }
-        let hours = minutes / 60
-        if hours < 24 { return "il y a \(hours)h" }
-        return "il y a \(hours / 24)j"
+        return AgeFormatting.tiered(Int(age.rounded(.up)))
     }
 
     /// Overflow indicator text (CA-6). Neutral, no direction visuelle.

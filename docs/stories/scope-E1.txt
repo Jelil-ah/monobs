@@ -1,0 +1,48 @@
+# Scope story E1 — portage du design D2 « Braise »
+# Format : préfixe autorisé, ou !préfixe interdit (le ! gagne TOUJOURS).
+#
+# DURCI 2026-07-25 après re-review Codex (« logique deny correcte, garde
+# globalement percé »). Trois trous étaient réels et sont fermés ici :
+#   - `MonobsKit/Tests/` autorisé EN BLOC => un agent pouvait affaiblir
+#     n'importe quel test métier tout en restant « dans le scope ».
+#   - `scripts/` + `docs/stories/` en bloc => le garde et son propre scope
+#     étaient auto-modifiables (fermé aussi côté script : auto-protection).
+#   - `Monobs/` en bloc => couvrait des chemins I/O jamais exercés par
+#     `swift test` (writer de snapshot, émetteur de notifications système).
+
+# ── Surfaces de présentation : le coeur de la story ────────────────────
+Monobs/
+MonobsWidget/
+
+# I/O réel et effets système : HORS périmètre d'un portage de thème.
+# Non exercés par `swift test` => une régression y passerait inaperçue.
+!Monobs/SharedSnapshotWriter.swift
+!Monobs/UserNotificationEmitter.swift
+
+# ── MonobsKit : présentation partagée UNIQUEMENT ───────────────────────
+# AMENDÉ 2026-07-25 : l'interdiction d'origine (« ne jamais toucher
+# MonobsKit/ ») était trop large — le package hébergeait DÉJÀ du formatage
+# user-facing (ageText, stateLabel, overflowText). Ce qu'il faut protéger,
+# c'est la LOGIQUE MÉTIER, pas le package. D'où ces règles ciblées.
+MonobsKit/Sources/MonobsKit/AgeFormatting.swift
+MonobsKit/Sources/MonobsKit/WidgetProjection.swift
+
+# Domaine : INTERDIT sans go humain explicite (seuils, états, config, ranking).
+!MonobsKit/Sources/MonobsKit/HostConfig.swift
+!MonobsKit/Sources/MonobsKit/Thresholds.swift
+!MonobsKit/Sources/MonobsKit/HostState.swift
+!MonobsKit/Sources/MonobsKit/MenuBarProjection.swift
+!MonobsKit/Package.swift
+
+# ── Tests : SEUL le fichier de tests d'âge est dans le périmètre ───────
+# Les autres suites couvrent la logique métier : les affaiblir doit être
+# impossible « par inadvertance ».
+MonobsKit/Tests/MonobsKitTests/WidgetAgeAndBuilderTests.swift
+
+# ── Artefacts de process ──────────────────────────────────────────────
+docs/stories/story-E1-theme-braise.md
+bmad/
+
+# Le garde de confidentialité n'est pas un artefact de story.
+!scripts/t-priv
+!scripts/t-priv-selftest
